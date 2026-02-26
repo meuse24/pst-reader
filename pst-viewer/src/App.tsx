@@ -335,7 +335,8 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
               Die Suche arbeitet im aktuell ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger, Anh&auml;nge und den Nachrichtentext.
               Mehrere Suchbegriffe werden mit UND verkn&uuml;pft. Die Suche ist nicht Gross-/Kleinschreibung-sensitiv.
               Bei grossen Ordnern werden Treffer und Fortschritt schrittweise angezeigt; die Suche kann jederzeit abgebrochen werden.
-              W&auml;hrend einer laufenden Suche sind Detail-Aktionen (z.B. Teilen/Anhang laden) kurzzeitig gesperrt.
+              Treffer k&ouml;nnen bereits w&auml;hrend der laufenden Suche ge&ouml;ffnet und gelesen werden.
+              Bestimmte Detail-Aktionen (z.B. Teilen/Anhang laden) sind bis zum Ende der Suche kurzzeitig gesperrt.
               Mit <b>Escape</b> wird die Suche geschlossen.
             </p>
           </section>
@@ -468,6 +469,8 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
             <p className="text-sm text-gray-600">
               Die Volltextsuche l&auml;uft im jeweils ausgew&auml;hlten Ordner und ber&uuml;cksichtigt auch den Nachrichtentext.
               Treffer werden bei grossen Ordnern schrittweise geliefert, inklusive Fortschrittsanzeige und Abbrechen-Funktion.
+              Treffer lassen sich bereits waehrend der Suche oeffnen.
+              Teilen und Anhang-Download bleiben waehrenddessen kurzzeitig deaktiviert.
             </p>
           </section>
 
@@ -801,9 +804,8 @@ function App() {
   )
 
   const handleEmailSelect = useCallback((email: EmailMeta) => {
-    if (pst.searching) return
     setSelectedEmail(email)
-  }, [pst.searching])
+  }, [])
 
   // Keyboard shortcuts
   useEffect(() => {

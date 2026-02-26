@@ -40,7 +40,7 @@ Alle schwere Arbeit laeuft im Worker-Thread:
 - **Paginiertes Ordner-Laden**: Ordner mit 500+ Mails werden seitenweise geladen (erste Seite 50, danach 200 Mails/Seite). Monotoner `folderLoadOpId`-Counter pro Request + `yieldToMessageLoop()` ermoeglichen Race-freien Abbruch bei Ordnerwechsel (auch A→B→A). Cache-Hits werden ebenfalls paginiert zurueckgesendet (kein 50k-Structured-Clone-Spike). Kleine Ordner (<500) laden weiterhin alles auf einmal.
 - **Lazy Body Loading**: `moveChildCursorTo(index)` + `getNextChild()` laedt Body nur fuer ausgewaehlte Mail
 - **IndexedDB**: Komplett im Worker (Load/Save/Delete)
-- **Suche**: Volltextsuche im ausgewaehlten Ordner (Betreff, Absender, Empfaenger, Anhaenge und Body). Ergebnisse werden paginiert/chunked geliefert, mit Fortschritt und Abbruch (`ABORT_SEARCH`) auch fuer sehr grosse Ordner.
+- **Suche**: Volltextsuche im ausgewaehlten Ordner (Betreff, Absender, Empfaenger, Anhaenge und Body). Ergebnisse werden paginiert/chunked geliefert, mit Fortschritt und Abbruch (`ABORT_SEARCH`) auch fuer sehr grosse Ordner. Treffer koennen bereits waehrend der laufenden Suche geoeffnet werden; der Suchcursor wird nach jedem Yield index-basiert re-synchronisiert.
 - **EML-Export**: Suchergebnisse oder ganze Ordner als EML-Dateien in ZIP exportieren. RFC-konformer EML-Builder:
   - RFC 2047 Encoded-Word Splitting (max 75 Zeichen pro Wort, UTF-8-Zeichengrenzen)
   - RFC 5322 Header Folding (SHOULD 78, MUST 998 Zeichen pro Zeile)
@@ -56,14 +56,14 @@ Alle schwere Arbeit laeuft im Worker-Thread:
 ### Worker-Kommunikation (`types.ts`)
 Typisierte Messages:
 - **Commands** (Main -> Worker): `LOAD_FILE`, `LOAD_BUFFER`, `LOAD_CACHED`, `DELETE_CACHE`, `FETCH_FOLDER`, `FETCH_BODY`, `SEARCH`, `ABORT_SEARCH`, `EXPORT_EMAILS`, `EXPORT_FOLDER`, `FETCH_ATTACHMENT`, `BUILD_EML`, `ABORT_LOAD`
-- **Responses** (Worker -> Main): `READY`, `FOLDER_EMAILS` (mit `totalCount` + `page`), `FOLDER_DONE`, `EMAIL_BODY`, `SEARCH_RESULTS`, `PROGRESS` (mit `phase: 'copy' | 'parse'`), `ERROR`, `EXPORT_READY`, `ATTACHMENT_DATA`, `EML_READY`, `CACHE_DELETED`
+- **Responses** (Worker -> Main): `READY`, `FOLDER_EMAILS` (mit `totalCount` + `page`), `FOLDER_DONE`, `EMAIL_BODY`, `SEARCH_RESULTS` (chunked + `requestId` + `append`), `SEARCH_PROGRESS`, `PROGRESS` (mit `phase: 'copy' | 'parse'`), `ERROR`, `EXPORT_READY`, `ATTACHMENT_DATA`, `EML_READY`, `CACHE_DELETED`
 
 ### React Hook (`usePSTWorker.ts`)
 - Kapselt Worker-Lifecycle + Message-Handling
 - Exponiert: `loadFile()`, `fetchFolder()`, `fetchBody()`, `search(query, folderPath)`, `abortSearch()`, `closeFile()`, `exportEmails()`, `exportFolder()`, `fetchAttachment()`, `shareEmail()`, `abortLoad()`
 - State: `tree`, `folderEmails` Map, `bodyCache` Map, `searchResults`, `searching`, `searchProgress`, `loadingPhase`, Loading/Error
 - `bodyCache` wird zusaetzlich als Ref gefuehrt um stale closures in `fetchBody` zu vermeiden
-- `indexedFolderCount` wird aus `folderEmails.size` abgeleitet (kein eigener State)
+- `indexedFolderCount` kommt als worker-reported Count (`searchableFolderCount`) aus `FOLDER_EMAILS` (kein eigener Zaehler je View)
 - **Paginierung**: `folderTotalCounts` (Map path->Gesamtzahl), `folderLoadingPaths` (Set der aktuell ladenden Ordner). `FOLDER_EMAILS` mit `page===0` ersetzt Array + setzt `folderLoadingPaths` auf nur diesen Pfad (raeumt gecancelte Pfade automatisch auf). `page>0` appendet. `FOLDER_DONE` entfernt aus `folderLoadingPaths`.
 
 ### Virtualisierung (`VirtualEmailList.tsx`)
@@ -109,7 +109,7 @@ Die Build-Ausgabe wird auch nach `pst-viewer.html` im Projekt-Root kopiert.
 - **Paginiertes Ordner-Laden**: Ordner mit 500+ Mails laden seitenweise (erste Seite 50, danach 200/Seite), erste Seite sofort sichtbar, Rest streamt im Hintergrund nach. Ordnerwechsel bricht laufendes Laden Race-frei ab (`folderLoadOpId`-Counter statt Pfad-Vergleich). Cache-Hits ebenfalls paginiert. Header zeigt "X / Y Nachrichten" waehrend Laden.
 - Lazy Body Loading (Body erst bei Auswahl)
 - IndexedDB komplett im Worker
-- Volltextsuche im ausgewaehlten Ordner (inkl. Body) mit Fortschrittsanzeige, chunked Ergebnislieferung und Abbrechen.
+- Volltextsuche im ausgewaehlten Ordner (inkl. Body) mit Fortschrittsanzeige, chunked Ergebnislieferung und Abbrechen; Treffer koennen bereits waehrend der Suche geoeffnet werden.
 - Virtualisierte E-Mail-Liste
 - **EML-Export**: Suchergebnisse oder ganze Ordner als EML in ZIP exportieren (HTML/TXT/Attachments waehlbar, strikt RFC-konform, im Worker). Warnung bei grossen Exporten.
 - **Ordner-Export**: `EXPORT_FOLDER` Command — iteriert Ordner direkt via Cursor (effizienter als Einzel-Lookups)

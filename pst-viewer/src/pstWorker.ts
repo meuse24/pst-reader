@@ -1308,9 +1308,11 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
               })
             }
 
+            let yielded = false
             if (now - lastYieldAt >= SEARCH_YIELD_INTERVAL) {
               lastYieldAt = now
               await yieldToMessageLoop()
+              yielded = true
               if (searchOpId !== mySearchOpId) {
                 post({
                   type: 'SEARCH_PROGRESS',
@@ -1328,6 +1330,11 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
               }
             }
 
+            // Other commands (e.g. FETCH_BODY) may move the shared folder cursor
+            // while we yielded. Re-sync to the next logical index before continuing.
+            if (yielded) {
+              folder.moveChildCursorTo(idx)
+            }
             msg = folder.getNextChild()
           }
         } catch (err) {

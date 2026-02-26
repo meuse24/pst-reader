@@ -11,6 +11,8 @@ Browser-basierter Outlook PST/OST-Viewer als Single-File-Web-App (ohne Server).
   - durchsucht Betreff, Absender, Empfaenger, Anhaenge und Nachrichtentext
   - Fortschrittsanzeige und Abbrechen waehrend der Suche
   - Ergebnisse werden schrittweise nachgeladen
+  - Treffer koennen bereits waehrend der laufenden Suche geoeffnet werden
+  - Teilen/Anhang-Download bleibt waehrend der Suche kurzzeitig deaktiviert
 - Export von Suchtreffern oder ganzen Ordnern als ZIP mit EML-Dateien
 
 ## Tech Stack
