@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.local
+*.log
+.DS_Store
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Test data
+*.pst
+*.ost
+
+# Temporary files
+plan.md
+review.md
+
+# Claude Code
+.claude/
