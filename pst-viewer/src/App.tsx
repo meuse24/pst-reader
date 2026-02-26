@@ -71,6 +71,365 @@ function FolderTreeItem({
   )
 }
 
+// ─── Export dialog (shared between search and folder export) ─────────────────
+
+const EXPORT_WARN_THRESHOLD = 1000
+const EXPORT_WARN_ATTACHMENTS = 500
+
+function ExportDialog({
+  count,
+  label,
+  options,
+  onOptionsChange,
+  onExport,
+  exporting,
+  loadingMsg,
+  attachmentCount,
+}: {
+  count: number
+  label: string
+  options: ExportOptions
+  onOptionsChange: (options: ExportOptions) => void
+  onExport: () => void
+  exporting: boolean
+  loadingMsg: string
+  /** Total number of emails with attachments in the export set (for warning) */
+  attachmentCount?: number
+}) {
+  const [showDialog, setShowDialog] = useState(false)
+  const [confirmed, setConfirmed] = useState(false)
+  const dialogRef = useRef<HTMLDivElement>(null)
+
+  const needsWarning = count >= EXPORT_WARN_THRESHOLD
+    || (options.includeAttachments && (attachmentCount ?? 0) >= EXPORT_WARN_ATTACHMENTS)
+
+  useEffect(() => {
+    if (!showDialog) return
+    setConfirmed(false)
+    const handler = (e: MouseEvent) => {
+      if (dialogRef.current && !dialogRef.current.contains(e.target as Node)) setShowDialog(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [showDialog])
+
+  return (
+    <div className="relative" ref={dialogRef}>
+      <button
+        className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+        onClick={() => setShowDialog(!showDialog)}
+        disabled={exporting}
+      >
+        {exporting ? (
+          <>
+            <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            {loadingMsg || 'Exportiert...'}
+          </>
+        ) : 'Exportieren'}
+      </button>
+      {showDialog && !exporting && (
+        <div className="absolute right-0 top-full mt-1 w-72 bg-white rounded-lg shadow-xl border border-gray-200 p-3 z-50">
+          <div className="text-xs font-semibold text-gray-600 mb-2">Export-Optionen</div>
+          <label className="flex items-center gap-2 text-sm text-gray-700 mb-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={options.includeHTML}
+              onChange={(e) => onOptionsChange({ ...options, includeHTML: e.target.checked })}
+              className="rounded"
+            />
+            HTML-Inhalt
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700 mb-1.5 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={options.includeTXT}
+              onChange={(e) => onOptionsChange({ ...options, includeTXT: e.target.checked })}
+              className="rounded"
+            />
+            Textinhalt
+          </label>
+          <label className="flex items-center gap-2 text-sm text-gray-700 mb-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={options.includeAttachments}
+              onChange={(e) => onOptionsChange({ ...options, includeAttachments: e.target.checked })}
+              className="rounded"
+            />
+            Anh&auml;nge einschlie&szlig;en
+          </label>
+          {needsWarning && !confirmed && (
+            <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
+              <div className="font-semibold mb-1">Grosser Export</div>
+              <p>
+                {count >= EXPORT_WARN_THRESHOLD && `${count.toLocaleString('de-DE')} E-Mails`}
+                {count >= EXPORT_WARN_THRESHOLD && options.includeAttachments && (attachmentCount ?? 0) >= EXPORT_WARN_ATTACHMENTS && ' mit '}
+                {options.includeAttachments && (attachmentCount ?? 0) >= EXPORT_WARN_ATTACHMENTS && `${(attachmentCount ?? 0).toLocaleString('de-DE')} Anh&auml;ngen`}
+                {' '}k&ouml;nnen viel Arbeitsspeicher beanspruchen und den Browser verlangsamen.
+              </p>
+              <button
+                className="mt-1.5 px-2 py-0.5 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 transition"
+                onClick={() => setConfirmed(true)}
+              >
+                Trotzdem exportieren
+              </button>
+            </div>
+          )}
+          <button
+            className="w-full px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50"
+            onClick={() => { onExport(); setShowDialog(false) }}
+            disabled={(!options.includeHTML && !options.includeTXT) || (needsWarning && !confirmed)}
+          >
+            {count.toLocaleString('de-DE')} {label} als ZIP exportieren
+          </button>
+          {!options.includeHTML && !options.includeTXT && (
+            <div className="text-xs text-red-500 mt-1">Mindestens ein Inhaltsformat w&auml;hlen</div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Help dialog ─────────────────────────────────────────────────────────────
+
+function HelpDialog({ onClose }: { onClose: () => void }) {
+  const overlayRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === overlayRef.current) onClose() }}
+    >
+      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto relative">
+        <button
+          className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
+          onClick={onClose}
+        >
+          &#10005;
+        </button>
+
+        <div className="p-6">
+          <h1 className="text-xl font-bold text-gray-900 mb-6">PST Viewer — Hilfe</h1>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">Erste Schritte</h2>
+            <p className="text-sm text-gray-600">
+              Outlook PST-Dateien k&ouml;nnen auf drei Wegen ge&ouml;ffnet werden:
+              per <b>Drag &amp; Drop</b> auf das Fenster, &uuml;ber das <b>Datei</b>-Men&uuml; oder mit dem Tastenkuerzel <b>Strg+O</b>.
+              Die Datei wird vollst&auml;ndig lokal im Browser verarbeitet.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">Ordnerstruktur</h2>
+            <p className="text-sm text-gray-600">
+              Nach dem &Ouml;ffnen wird die Ordnerstruktur der PST-Datei links angezeigt.
+              Der erste Ordner mit E-Mails wird automatisch ausgew&auml;hlt.
+              Ordner k&ouml;nnen auf-/zugeklappt werden. Die Zahl neben dem Ordnernamen zeigt die Anzahl der enthaltenen E-Mails.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">E-Mails lesen</h2>
+            <p className="text-sm text-gray-600">
+              Klicken Sie auf einen Ordner, um dessen E-Mails zu laden. Bei grossen Ordnern (500+ Nachrichten) werden die E-Mails seitenweise geladen —
+              die ersten 50 erscheinen sofort, der Rest streamt im Hintergrund nach.
+              Klicken Sie auf eine E-Mail, um deren Inhalt anzuzeigen. HTML-E-Mails werden formatiert dargestellt, reine Text-E-Mails als Klartext.
+              Anh&auml;nge werden unter den E-Mail-Details aufgelistet.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">Suche</h2>
+            <p className="text-sm text-gray-600">
+              Mit <b>Strg+F</b> oder Klick auf das Suchfeld k&ouml;nnen Sie nach E-Mails suchen.
+              Die Suche durchsucht Betreff, Absender, Empf&auml;nger und Anh&auml;nge aller bisher besuchten Ordner.
+              Mehrere Suchbegriffe werden mit UND verkn&uuml;pft. Die Suche ist nicht Gross-/Kleinschreibung-sensitiv.
+              Mit <b>Escape</b> wird die Suche geschlossen.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">EML-Export</h2>
+            <p className="text-sm text-gray-600">
+              Suchergebnisse oder ganze Ordner k&ouml;nnen als ZIP-Archiv mit EML-Dateien exportiert werden.
+              Klicken Sie auf den <b>Exportieren</b>-Button im Such- oder Ordner-Header.
+              Im Export-Dialog k&ouml;nnen Sie w&auml;hlen, ob HTML-Inhalt, Textinhalt und/oder Anh&auml;nge eingeschlossen werden sollen.
+              Die EML-Dateien sind MIME-konform und k&ouml;nnen in jedem E-Mail-Programm ge&ouml;ffnet werden.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">OPFS-Cache</h2>
+            <p className="text-sm text-gray-600">
+              Grosse PST-Dateien werden automatisch im lokalen OPFS-Cache (Origin Private File System) gespeichert.
+              Beim n&auml;chsten Besuch wird die Datei aus dem Cache geladen, ohne sie erneut ausw&auml;hlen zu m&uuml;ssen.
+              Der Cache kann &uuml;ber <b>Datei &rarr; PST schliessen &amp; Cache l&ouml;schen</b> gel&ouml;scht werden.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">Tastenkuerzel</h2>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-200">
+                  <th className="pb-1 pr-4 font-medium">Taste</th>
+                  <th className="pb-1 font-medium">Funktion</th>
+                </tr>
+              </thead>
+              <tbody className="text-gray-600">
+                <tr><td className="py-1 pr-4 font-mono text-xs">Strg+O</td><td>PST-Datei &ouml;ffnen</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">Strg+F</td><td>Suche &ouml;ffnen</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">Escape</td><td>Suche schliessen / Hilfe schliessen</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">F1</td><td>Hilfe anzeigen</td></tr>
+              </tbody>
+            </table>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">Browser-Kompatibilit&auml;t</h2>
+            <p className="text-sm text-gray-600">
+              <b>Chrome</b> und <b>Edge</b> (ab Version 102) werden empfohlen — sie unterst&uuml;tzen OPFS f&uuml;r grosse Dateien (&gt;250 MB).
+              Firefox und Safari funktionieren f&uuml;r kleinere PST-Dateien.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">Datenschutz</h2>
+            <p className="text-sm text-gray-600">
+              Alle Daten werden ausschliesslich lokal im Browser verarbeitet. Es werden keine Daten an einen Server &uuml;bertragen.
+              Die PST-Datei verlässt Ihren Computer nicht. Der OPFS-Cache ist nur f&uuml;r diese Webseite zugänglich.
+            </p>
+          </section>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Info / About dialog ─────────────────────────────────────────────────────
+
+const LIB_CREDITS: Array<{ name: string; version: string; author: string; license: string; url: string }> = [
+  { name: 'React', version: '19.2', author: 'Meta / Facebook', license: 'MIT', url: 'https://github.com/facebook/react/blob/main/LICENSE' },
+  { name: 'TypeScript', version: '5.9', author: 'Microsoft', license: 'Apache-2.0', url: 'https://github.com/microsoft/TypeScript/blob/main/LICENSE.txt' },
+  { name: 'Vite', version: '7.3', author: 'Evan You', license: 'MIT', url: 'https://github.com/vitejs/vite/blob/main/LICENSE' },
+  { name: 'Tailwind CSS', version: '4.2', author: 'Tailwind Labs', license: 'MIT', url: 'https://github.com/tailwindlabs/tailwindcss/blob/main/LICENSE' },
+  { name: 'vite-plugin-singlefile', version: '2.3', author: 'Richard Tallent', license: 'MIT', url: 'https://github.com/nicksrandall/vite-plugin-singlefile/blob/main/LICENSE' },
+  { name: 'pst-extractor', version: '1.12', author: 'Ed Pfromer', license: 'MIT', url: 'https://github.com/nicksrandall/pst-extractor/blob/main/LICENSE' },
+  { name: '@tanstack/react-virtual', version: '3.13', author: 'Tanner Linsley', license: 'MIT', url: 'https://github.com/TanStack/virtual/blob/main/LICENSE' },
+  { name: 'fflate', version: '0.8', author: 'Arjun Barrett', license: 'MIT', url: 'https://github.com/101arrowz/fflate/blob/master/LICENSE' },
+  { name: 'buffer', version: '6.0', author: 'Feross Aboukhadijeh', license: 'MIT', url: 'https://github.com/nicksrandall/feross/buffer/blob/master/LICENSE' },
+]
+
+function InfoDialog({ onClose }: { onClose: () => void }) {
+  const overlayRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [onClose])
+
+  return (
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+      onClick={(e) => { if (e.target === overlayRef.current) onClose() }}
+    >
+      <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full max-h-[80vh] overflow-y-auto relative">
+        <button
+          className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
+          onClick={onClose}
+        >
+          &#10005;
+        </button>
+
+        <div className="p-6">
+          <div className="text-center mb-6">
+            <div className="text-4xl mb-2">&#128231;</div>
+            <h1 className="text-xl font-bold text-gray-900">PST Viewer</h1>
+            <p className="text-sm text-gray-500 mt-1">Browser-basierter Outlook PST-Datei-Viewer</p>
+            <p className="text-xs text-gray-400 mt-2">&copy; {new Date().getFullYear()} MEUSE24</p>
+            <div className="flex items-center justify-center gap-3 mt-2">
+              <a href="https://meuse24.info" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">meuse24.info</a>
+              <span className="text-gray-300">|</span>
+              <a href="https://github.com/meuse24/pst-viewer" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">GitHub</a>
+            </div>
+          </div>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-2">Tech Stack</h2>
+            <div className="flex flex-wrap gap-1.5">
+              {['React 19', 'TypeScript 5.9', 'Vite 7', 'Tailwind CSS 4', 'Web Workers', 'IndexedDB', 'OPFS'].map(tag => (
+                <span key={tag} className="px-2 py-0.5 bg-blue-50 text-blue-700 text-xs rounded-full">{tag}</span>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">
+              Einzelne HTML-Datei, kein Server, alle Daten lokal im Browser.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-2">Verwendete Bibliotheken</h2>
+            <p className="text-xs text-gray-500 mb-2">
+              Vielen Dank an die Autoren und Maintainer folgender Open-Source-Bibliotheken:
+            </p>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-left text-gray-500 border-b border-gray-200">
+                  <th className="pb-1 pr-2 font-medium">Bibliothek</th>
+                  <th className="pb-1 pr-2 font-medium">Version</th>
+                  <th className="pb-1 pr-2 font-medium">Autor</th>
+                  <th className="pb-1 font-medium">Lizenz</th>
+                </tr>
+              </thead>
+              <tbody className="text-gray-600">
+                {LIB_CREDITS.map(lib => (
+                  <tr key={lib.name} className="border-b border-gray-50">
+                    <td className="py-1 pr-2 font-medium text-gray-700">{lib.name}</td>
+                    <td className="py-1 pr-2">{lib.version}</td>
+                    <td className="py-1 pr-2">{lib.author}</td>
+                    <td className="py-1">
+                      <a href={lib.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                        {lib.license}
+                      </a>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+
+          <section>
+            <h2 className="text-base font-semibold text-gray-800 mb-2">Entwicklungswerkzeuge</h2>
+            <p className="text-sm text-gray-600">
+              Dieses Projekt wurde mit Unterst&uuml;tzung von{' '}
+              <a href="https://claude.ai/code" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">Claude Code</a>
+              {' '}(Anthropic) und{' '}
+              <a href="https://openai.com/codex" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">Codex CLI</a>
+              {' '}(OpenAI) entwickelt. Vielen Dank an beide Teams f&uuml;r ihre herausragenden AI-Coding-Werkzeuge.
+            </p>
+          </section>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Menu dropdown ───────────────────────────────────────────────────────────
 
 function MenuBar({
@@ -79,12 +438,16 @@ function MenuBar({
   savedAt,
   onOpenFile,
   onCloseFile,
+  onShowHelp,
+  onShowInfo,
 }: {
   fileName: string
   fileSize: number
   savedAt: number
   onOpenFile: (file: File) => void
   onCloseFile: () => void
+  onShowHelp: () => void
+  onShowInfo: () => void
 }) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -158,6 +521,20 @@ function MenuBar({
         )}
       </div>
 
+      <button
+        className="px-3 py-1 text-sm text-gray-300 hover:bg-gray-700 hover:text-white rounded transition"
+        onClick={onShowHelp}
+      >
+        Hilfe
+      </button>
+
+      <button
+        className="px-3 py-1 text-sm text-gray-300 hover:bg-gray-700 hover:text-white rounded transition"
+        onClick={onShowInfo}
+      >
+        Info
+      </button>
+
       {fileName && (
         <span className="text-xs text-gray-400 truncate">
           {fileName} ({formatFileSize(fileSize)})
@@ -189,9 +566,9 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const [showExportDialog, setShowExportDialog] = useState(false)
   const [exportOptions, setExportOptions] = useState<ExportOptions>({ includeHTML: true, includeTXT: true, includeAttachments: false })
-  const exportDialogRef = useRef<HTMLDivElement>(null)
+  const [showHelp, setShowHelp] = useState(false)
+  const [showInfo, setShowInfo] = useState(false)
 
   const debouncedQuery = useDebounce(searchQuery, 200)
   const isSearching = debouncedQuery.trim().length > 0
@@ -313,28 +690,27 @@ function App() {
         setSearchQuery('')
         searchInputRef.current?.blur()
       }
+      if (e.key === 'F1') {
+        e.preventDefault()
+        setShowHelp(true)
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [isSearching])
 
-  // Close export dialog on outside click
-  useEffect(() => {
-    if (!showExportDialog) return
-    const handler = (e: MouseEvent) => {
-      if (exportDialogRef.current && !exportDialogRef.current.contains(e.target as Node)) setShowExportDialog(false)
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [showExportDialog])
-
-  const handleExport = useCallback(() => {
+  const handleSearchExport = useCallback(() => {
     if (!pst.searchResults || pst.searchResults.length === 0) return
     const emails = pst.searchResults.map(r => ({ folderPath: r.folderPath, index: r.email.index }))
     pst.exportEmails(emails, exportOptions)
-    setShowExportDialog(false)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pst.searchResults, exportOptions])
+
+  const handleFolderExport = useCallback(() => {
+    if (!selectedFolderPath) return
+    pst.exportFolder(selectedFolderPath, exportOptions)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedFolderPath, exportOptions])
 
   // ── Landing page ─────────────────────────────────────────────────────────────
   if (!pst.tree) {
@@ -350,6 +726,8 @@ function App() {
           savedAt={pst.savedAt}
           onOpenFile={handleFile}
           onCloseFile={handleClose}
+          onShowHelp={() => setShowHelp(true)}
+          onShowInfo={() => setShowInfo(true)}
         />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center p-12 border-2 border-dashed border-gray-300 rounded-xl max-w-lg w-full mx-4 bg-white">
@@ -408,6 +786,8 @@ function App() {
             e.target.value = ''
           }}
         />
+        {showHelp && <HelpDialog onClose={() => setShowHelp(false)} />}
+        {showInfo && <InfoDialog onClose={() => setShowInfo(false)} />}
       </div>
     )
   }
@@ -421,6 +801,8 @@ function App() {
         savedAt={pst.savedAt}
         onOpenFile={handleFile}
         onCloseFile={handleClose}
+        onShowHelp={() => setShowHelp(true)}
+        onShowInfo={() => setShowInfo(true)}
       />
 
       <div className="flex flex-1 min-h-0">
@@ -471,82 +853,51 @@ function App() {
                   in {pst.indexedFolderCount} besuchten Ordner(n)
                 </span>
                 {pst.searchResults && pst.searchResults.length > 0 && (
-                  <div className="relative ml-auto" ref={exportDialogRef}>
-                    <button
-                      className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-                      onClick={() => setShowExportDialog(!showExportDialog)}
-                      disabled={pst.exporting}
-                    >
-                      {pst.exporting ? (
-                        <>
-                          <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                          </svg>
-                          {pst.loadingMsg || 'Exportiert...'}
-                        </>
-                      ) : 'Exportieren'}
-                    </button>
-                    {showExportDialog && !pst.exporting && (
-                      <div className="absolute right-0 top-full mt-1 w-64 bg-white rounded-lg shadow-xl border border-gray-200 p-3 z-50">
-                        <div className="text-xs font-semibold text-gray-600 mb-2">Export-Optionen</div>
-                        <label className="flex items-center gap-2 text-sm text-gray-700 mb-1.5 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={exportOptions.includeHTML}
-                            onChange={(e) => setExportOptions(prev => ({ ...prev, includeHTML: e.target.checked }))}
-                            className="rounded"
-                          />
-                          HTML-Inhalt
-                        </label>
-                        <label className="flex items-center gap-2 text-sm text-gray-700 mb-1.5 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={exportOptions.includeTXT}
-                            onChange={(e) => setExportOptions(prev => ({ ...prev, includeTXT: e.target.checked }))}
-                            className="rounded"
-                          />
-                          Textinhalt
-                        </label>
-                        <label className="flex items-center gap-2 text-sm text-gray-700 mb-3 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={exportOptions.includeAttachments}
-                            onChange={(e) => setExportOptions(prev => ({ ...prev, includeAttachments: e.target.checked }))}
-                            className="rounded"
-                          />
-                          Anh&auml;nge einschlie&szlig;en
-                        </label>
-                        <button
-                          className="w-full px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50"
-                          onClick={handleExport}
-                          disabled={!exportOptions.includeHTML && !exportOptions.includeTXT}
-                        >
-                          {pst.searchResults?.length} Treffer als ZIP exportieren
-                        </button>
-                        {!exportOptions.includeHTML && !exportOptions.includeTXT && (
-                          <div className="text-xs text-red-500 mt-1">Mindestens ein Inhaltsformat w&auml;hlen</div>
-                        )}
-                      </div>
-                    )}
+                  <div className="ml-auto">
+                    <ExportDialog
+                      count={pst.searchResults.length}
+                      label="Treffer"
+                      options={exportOptions}
+                      onOptionsChange={setExportOptions}
+                      onExport={handleSearchExport}
+                      exporting={pst.exporting}
+                      loadingMsg={pst.loadingMsg}
+                      attachmentCount={pst.searchResults.filter(r => r.email.hasAttachments).length}
+                    />
                   </div>
                 )}
               </div>
             ) : (
-              <>
-                <div className="font-semibold text-gray-800">{selectedFolder?.name || 'Ordner ausw\u00e4hlen'}</div>
-                <div className="text-xs text-gray-400">
-                  {selectedFolder ? (
-                    selectedFolderPath && pst.folderLoadingPaths.has(selectedFolderPath) ? (
-                      `${folderEmailList?.length ?? 0} / ${pst.folderTotalCounts.get(selectedFolderPath) ?? selectedFolder.emailCount} Nachrichten`
-                    ) : !folderEmailList && selectedFolder.emailCount > 0 ? (
-                      `${selectedFolder.emailCount} Nachrichten (wird geladen...)`
-                    ) : (
-                      `${folderEmailList?.length ?? selectedFolder.emailCount} Nachrichten`
-                    )
-                  ) : ''}
+              <div className="flex items-center gap-2">
+                <div className="min-w-0">
+                  <div className="font-semibold text-gray-800 truncate">{selectedFolder?.name || 'Ordner ausw\u00e4hlen'}</div>
+                  <div className="text-xs text-gray-400">
+                    {selectedFolder ? (
+                      selectedFolderPath && pst.folderLoadingPaths.has(selectedFolderPath) ? (
+                        `${folderEmailList?.length ?? 0} / ${pst.folderTotalCounts.get(selectedFolderPath) ?? selectedFolder.emailCount} Nachrichten`
+                      ) : !folderEmailList && selectedFolder.emailCount > 0 ? (
+                        `${selectedFolder.emailCount} Nachrichten (wird geladen...)`
+                      ) : (
+                        `${folderEmailList?.length ?? selectedFolder.emailCount} Nachrichten`
+                      )
+                    ) : ''}
+                  </div>
                 </div>
-              </>
+                {selectedFolderPath && folderEmailList && folderEmailList.length > 0 && !pst.folderLoadingPaths.has(selectedFolderPath) && (
+                  <div className="ml-auto flex-shrink-0">
+                    <ExportDialog
+                      count={folderEmailList.length}
+                      label="Nachrichten"
+                      options={exportOptions}
+                      onOptionsChange={setExportOptions}
+                      onExport={handleFolderExport}
+                      exporting={pst.exporting}
+                      loadingMsg={pst.loadingMsg}
+                      attachmentCount={folderEmailList.filter(e => e.hasAttachments).length}
+                    />
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -651,6 +1002,9 @@ function App() {
           e.target.value = ''
         }}
       />
+
+      {showHelp && <HelpDialog onClose={() => setShowHelp(false)} />}
+      {showInfo && <InfoDialog onClose={() => setShowInfo(false)} />}
     </div>
   )
 }

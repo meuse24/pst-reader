@@ -9,9 +9,10 @@ Browser-basierter Outlook PST-Datei-Viewer. Laeuft komplett lokal im Browser als
 - **E-Mails lesen** mit HTML- und Text-Ansicht
 - **Anhaenge** anzeigen (Dateinamen und Anzahl)
 - **Volltextsuche** ueber alle besuchten Ordner (Betreff, Absender, Empfaenger, Anhaenge)
-- **EML-Export** — Suchergebnisse als EML-Dateien in einer ZIP exportieren (HTML/Text/Anhaenge waehlbar)
+- **EML-Export** — Suchergebnisse oder ganze Ordner als EML-Dateien in einer ZIP exportieren (HTML/Text/Anhaenge waehlbar, strikt RFC-konform)
 - **OPFS-Cache** — grosse PST-Dateien werden im Browser-Cache gespeichert (kein erneutes Laden noetig)
 - **Grosse Dateien** — optimiert fuer PST-Dateien bis 1GB+ (Web Worker, Lazy Loading, Virtualisierung)
+- **Hilfe & Info** — ausfuehrliche Hilfe (F1) und Info-Dialog mit Lizenzen und Credits
 
 ## Demo
 
@@ -77,17 +78,19 @@ Browser (Main Thread)          Web Worker
 
 ## EML-Export
 
-Suchergebnisse koennen als EML-Dateien in einer ZIP-Datei exportiert werden:
+Suchergebnisse oder ganze Ordner koennen als EML-Dateien in einer ZIP-Datei exportiert werden:
 
-1. Suche ausfuehren
-2. "Exportieren" klicken
+1. **Suchergebnisse exportieren**: Suche ausfuehren → "Exportieren" im Such-Header
+2. **Ordner exportieren**: Ordner auswaehlen → "Exportieren" im Ordner-Header
 3. Optionen waehlen:
    - HTML-Inhalt einschliessen
    - Text-Inhalt einschliessen
    - Anhaenge einschliessen
 4. ZIP wird automatisch heruntergeladen
 
-Die EML-Dateien sind MIME-konform und koennen in Thunderbird, Outlook oder anderen E-Mail-Clients geoeffnet werden.
+Bei grossen Exporten (>=1000 Mails oder viele Anhaenge) erscheint eine Warnung mit Bestaetigung.
+
+Die EML-Dateien sind strikt RFC-konform (RFC 5322, 2045-2049, 2047, 2231) und koennen in Thunderbird, Outlook, Apple Mail oder anderen E-Mail-Clients geoeffnet werden.
 
 ## Browser-Kompatibilitaet
 
@@ -104,7 +107,8 @@ Die EML-Dateien sind MIME-konform und koennen in Thunderbird, Outlook oder ander
 |---|---|
 | `Strg+O` | PST-Datei oeffnen |
 | `Strg+F` | Suche fokussieren |
-| `Escape` | Suche schliessen |
+| `Escape` | Suche / Dialog schliessen |
+| `F1` | Hilfe anzeigen |
 
 ## Projektstruktur
 
@@ -115,15 +119,21 @@ pst-viewer/
     pstWorker.ts          # Web Worker: PST-Parsing, IndexedDB, EML-Builder, ZIP-Export
     usePSTWorker.ts       # React Hook: Worker-Lifecycle + State
     VirtualEmailList.tsx  # Virtualisierte E-Mail-Liste
-    App.tsx               # Haupt-UI (MenuBar, FolderTree, Detail-Ansicht, Export-Dialog)
+    App.tsx               # Haupt-UI (MenuBar, FolderTree, ExportDialog, HelpDialog, InfoDialog)
     main.tsx              # Entry Point
     fs-shim.ts            # Leerer fs-Shim fuer pst-extractor im Browser
     index.css             # Tailwind Import
   vite.config.ts          # Vite Config mit Worker-Inline + Node-Polyfills
   index.html              # HTML Template
-pst-viewer.html           # Build-Ausgabe (einzelne HTML-Datei, ~880KB)
+pst-viewer.html           # Build-Ausgabe (einzelne HTML-Datei, ~900KB)
 ```
+
+## Credits
+
+Entwickelt mit Unterstuetzung von [Claude Code](https://claude.ai/code) (Anthropic) und [Codex CLI](https://openai.com/codex) (OpenAI).
+
+Siehe Info-Dialog in der Anwendung fuer eine vollstaendige Liste aller verwendeten Bibliotheken mit Autoren und Lizenzen.
 
 ## Lizenz
 
-MIT
+MIT — &copy; 2026 MEUSE24

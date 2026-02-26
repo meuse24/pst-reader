@@ -54,6 +54,7 @@ export type WorkerCommand =
   | { type: 'FETCH_BODY'; folderPath: string; index: number }
   | { type: 'SEARCH'; query: string }
   | { type: 'EXPORT_EMAILS'; emails: Array<{ folderPath: string; index: number }>; options: ExportOptions }
+  | { type: 'EXPORT_FOLDER'; folderPath: string; options: ExportOptions }
 
 // ─── Worker responses (worker → main) ────────────────────────────────────────
 

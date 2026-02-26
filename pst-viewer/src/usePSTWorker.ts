@@ -27,6 +27,7 @@ export interface PSTWorkerActions {
   search: (query: string) => void
   closeFile: () => void
   exportEmails: (emails: Array<{ folderPath: string; index: number }>, options: ExportOptions) => void
+  exportFolder: (folderPath: string, options: ExportOptions) => void
 }
 
 const MAX_BODY_CACHE = 100
@@ -246,6 +247,12 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     send({ type: 'EXPORT_EMAILS', emails, options })
   }, [send])
 
+  const exportFolder = useCallback((folderPath: string, options: ExportOptions) => {
+    setExporting(true)
+    setLoadingMsg('Export wird vorbereitet...')
+    send({ type: 'EXPORT_FOLDER', folderPath, options })
+  }, [send])
+
   return {
     tree, fileName, fileSize, savedAt,
     loading, loadingMsg, progress, error,
@@ -253,7 +260,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     indexedFolderCount,
     folderTotalCounts, folderLoadingPaths,
     exporting,
-    loadFile, fetchFolder, fetchBody, search, closeFile, exportEmails,
+    loadFile, fetchFolder, fetchBody, search, closeFile, exportEmails, exportFolder,
   }
 }
 

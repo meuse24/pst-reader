@@ -21,7 +21,7 @@ pst-viewer/
     pstWorker.ts          # Web Worker: PST-Parsing, IndexedDB, Lazy-Loading
     usePSTWorker.ts       # React Hook: Worker-Lifecycle + State
     VirtualEmailList.tsx  # Virtualisierte E-Mail-Liste
-    App.tsx               # Haupt-UI (MenuBar, FolderTree, Detail-Ansicht)
+    App.tsx               # Haupt-UI (MenuBar, FolderTree, Detail-Ansicht, ExportDialog, HelpDialog, InfoDialog)
     main.tsx              # Entry Point
     fs-shim.ts            # Leerer fs-Shim fuer pst-extractor im Browser
     index.css             # Tailwind Import
@@ -41,16 +41,22 @@ Alle schwere Arbeit laeuft im Worker-Thread:
 - **Lazy Body Loading**: `moveChildCursorTo(index)` + `getNextChild()` laedt Body nur fuer ausgewaehlte Mail
 - **IndexedDB**: Komplett im Worker (Load/Save/Delete)
 - **Suche**: Durchsucht `emailCache` (alle besuchten Ordner), nur Metafelder — waechst inkrementell bei paginiertem Laden
-- **EML-Export**: Suchergebnisse als EML-Dateien in ZIP exportieren. EML-Builder mit korrektem MIME (multipart/alternative fuer HTML+TXT, multipart/mixed mit Attachments). RFC 2047 Header-Encoding, RFC 2822 Datums-Format. ZIP via `fflate` (zipSync). Fortschritt alle 10 Mails, Abbruch via `loadOpId`.
+- **EML-Export**: Suchergebnisse oder ganze Ordner als EML-Dateien in ZIP exportieren. RFC-konformer EML-Builder:
+  - RFC 2047 Encoded-Word Splitting (max 75 Zeichen pro Wort, UTF-8-Zeichengrenzen)
+  - RFC 5322 Header Folding (SHOULD 78, MUST 998 Zeichen pro Zeile)
+  - RFC 2231 Filename-Encoding mit Dual-Filename (`filename=` ASCII-Fallback + `filename*=` UTF-8)
+  - RFC 2822 Datums-Format, Header-Injection-Schutz (CR/LF-Sanitizing)
+  - ZIP via `fflate` (zipSync). Fortschritt alle 10 Mails, Abbruch via `loadOpId`.
+  - Warnung bei grossen Exporten (>=1000 Mails oder >=500 Mails mit Anhaengen)
 
 ### Worker-Kommunikation (`types.ts`)
 Typisierte Messages:
-- **Commands** (Main -> Worker): `LOAD_FILE`, `LOAD_BUFFER`, `LOAD_CACHED`, `DELETE_CACHE`, `FETCH_FOLDER`, `FETCH_BODY`, `SEARCH`, `EXPORT_EMAILS`
+- **Commands** (Main -> Worker): `LOAD_FILE`, `LOAD_BUFFER`, `LOAD_CACHED`, `DELETE_CACHE`, `FETCH_FOLDER`, `FETCH_BODY`, `SEARCH`, `EXPORT_EMAILS`, `EXPORT_FOLDER`
 - **Responses** (Worker -> Main): `READY`, `FOLDER_EMAILS` (mit `totalCount` + `page`), `FOLDER_DONE`, `EMAIL_BODY`, `SEARCH_RESULTS`, `PROGRESS`, `ERROR`, `EXPORT_READY`, `CACHE_DELETED`
 
 ### React Hook (`usePSTWorker.ts`)
 - Kapselt Worker-Lifecycle + Message-Handling
-- Exponiert: `loadFile()`, `fetchFolder()`, `fetchBody()`, `search()`, `closeFile()`, `exportEmails()`
+- Exponiert: `loadFile()`, `fetchFolder()`, `fetchBody()`, `search()`, `closeFile()`, `exportEmails()`, `exportFolder()`
 - State: `tree`, `folderEmails` Map, `bodyCache` Map, `searchResults`, Loading/Error
 - `bodyCache` wird zusaetzlich als Ref gefuehrt um stale closures in `fetchBody` zu vermeiden
 - `indexedFolderCount` wird aus `folderEmails.size` abgeleitet (kein eigener State)
@@ -66,7 +72,7 @@ Typisierte Messages:
 ```bash
 cd pst-viewer
 npm install
-npm run build        # -> dist/index.html (einzelne Datei ~880KB)
+npm run build        # -> dist/index.html (einzelne Datei ~900KB)
 ```
 
 Die Build-Ausgabe wird auch nach `pst-viewer.html` im Projekt-Root kopiert.
@@ -101,7 +107,10 @@ Die Build-Ausgabe wird auch nach `pst-viewer.html` im Projekt-Root kopiert.
 - IndexedDB komplett im Worker
 - Suche ueber besuchte Ordner (Metafelder, kein Body-Text) — waechst inkrementell bei paginiertem Laden
 - Virtualisierte E-Mail-Liste
-- **EML-Export**: Suchergebnisse als EML in ZIP exportieren (HTML/TXT/Attachments waehlbar, MIME-konform, im Worker)
+- **EML-Export**: Suchergebnisse oder ganze Ordner als EML in ZIP exportieren (HTML/TXT/Attachments waehlbar, strikt RFC-konform, im Worker). Warnung bei grossen Exporten.
+- **Ordner-Export**: `EXPORT_FOLDER` Command — iteriert Ordner direkt via Cursor (effizienter als Einzel-Lookups)
+- **Hilfe-Dialog**: Ausfuehrliche Hilfe mit Tastenkuerzeln, Browser-Kompatibilitaet, Datenschutz
+- **Info-Dialog**: Copyright, Tech Stack, Bibliotheken mit Autor/Version/Lizenz, Dank an AI-Tools
 - Ziel: PST-Dateien bis 1GB+ fluessig verarbeiten
 
 #### Speicher-Impact (500MB PST, geschaetzt)

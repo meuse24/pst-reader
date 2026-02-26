@@ -296,13 +296,119 @@ async function deleteOpfsFile() {
   } catch { /* file may not exist */ }
 }
 
-// ─── EML builder helpers ────────────────────────────────────────────────────
+// ─── EML builder helpers (RFC 5322, 2045-2049, 2047, 2231) ─────────────────
 
+/** Strip CR/LF to prevent header injection (RFC 5322 §2.2) */
+function sanitizeHeaderValue(text: string): string {
+  return text.replace(/[\r\n]+/g, ' ').trim()
+}
+
+/** Sanitize email address — only printable ASCII, no angle brackets or CR/LF */
+function sanitizeEmail(email: string): string {
+  return email.replace(/[\r\n<>]/g, '').replace(/[^\x21-\x7e]/g, '').trim()
+}
+
+/**
+ * RFC 2047 encoded-word encoding with splitting.
+ * Each encoded-word MUST be <=75 chars (RFC 2047 §2).
+ * For base64: =?UTF-8?B?...?= overhead is 12 chars, leaving 63 for payload.
+ * 63 base64 chars = 47 raw bytes. We split on UTF-8 char boundaries.
+ */
 function encodeRfc2047(text: string): string {
-  // Only encode if non-ASCII characters present
-  if (/^[\x20-\x7E]*$/.test(text)) return text
-  const encoded = Buffer.from(text, 'utf-8').toString('base64')
-  return `=?UTF-8?B?${encoded}?=`
+  if (/^[\x20-\x7e]*$/.test(text)) return text
+  const bytes = Buffer.from(text, 'utf-8')
+  // 63 base64 chars → 47 bytes input (floor(63*3/4)=47)
+  const chunkSize = 45 // conservative to stay under 75 with overhead
+  const words: string[] = []
+  for (let offset = 0; offset < bytes.length;) {
+    // Find a clean UTF-8 boundary at or before offset+chunkSize
+    let end = Math.min(offset + chunkSize, bytes.length)
+    // Don't split in the middle of a multi-byte UTF-8 sequence
+    if (end < bytes.length) {
+      while (end > offset && (bytes[end] & 0xC0) === 0x80) end--
+    }
+    if (end === offset) end = Math.min(offset + chunkSize, bytes.length) // fallback
+    const chunk = Buffer.from(bytes.buffer as ArrayBuffer, bytes.byteOffset + offset, end - offset)
+    words.push(`=?UTF-8?B?${chunk.toString('base64')}?=`)
+    offset = end
+  }
+  return words.join('\r\n ')
+}
+
+/**
+ * Fold a header line to comply with RFC 5322 §2.1.1:
+ * - MUST NOT exceed 998 chars per line
+ * - SHOULD NOT exceed 78 chars per line
+ * Folds at commas (address lists), spaces, or forces a break at 998.
+ */
+function foldHeader(header: string): string {
+  if (header.length <= 78) return header
+  const colonIdx = header.indexOf(': ')
+  if (colonIdx < 0) return header
+  const name = header.slice(0, colonIdx + 2)
+  const value = header.slice(colonIdx + 2)
+
+  // Already contains encoded-word folding? Leave as-is.
+  if (value.includes('\r\n ')) return header
+
+  const lines: string[] = []
+  let current = name
+  // Split on comma-space (address lists) or spaces
+  const tokens = value.split(/(?<=, )|(?<= )/g)
+
+  for (const token of tokens) {
+    if (current.length + token.length > 76 && current.length > name.length) {
+      lines.push(current)
+      current = ' ' + token // continuation line starts with space (RFC 5322 §2.2.3)
+    } else {
+      current += token
+    }
+  }
+  if (current.trim()) lines.push(current)
+
+  // Hard-break any remaining lines >998 chars (MUST limit)
+  const result: string[] = []
+  for (const line of lines) {
+    if (line.length <= 998) {
+      result.push(line)
+    } else {
+      for (let i = 0; i < line.length; i += 998) {
+        result.push((i > 0 ? ' ' : '') + line.slice(i, i + 998))
+      }
+    }
+  }
+  return result.join('\r\n')
+}
+
+/**
+ * RFC 2231 parameter value encoding for Content-Type/Content-Disposition.
+ * Returns { simple, extended } where:
+ * - simple: quoted ASCII fallback filename for old clients
+ * - extended: RFC 2231 UTF-8 percent-encoded filename* for modern clients
+ * When the name is pure ASCII, extended is null.
+ */
+function encodeFilenameParams(name: string): { simple: string; extended: string | null } {
+  // Sanitize for header safety
+  const clean = sanitizeHeaderValue(name)
+  // ASCII-safe fallback: strip non-ASCII, replace quotes
+  const ascii = clean.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, "'")
+  const simple = `"${ascii}"`
+
+  // If pure ASCII and no special chars, no need for extended
+  if (/^[\x20-\x7e]*$/.test(clean) && !clean.includes('"') && !clean.includes('\\')) {
+    return { simple: `"${clean}"`, extended: null }
+  }
+
+  // RFC 2231 percent-encoding
+  const encoded = Array.from(new TextEncoder().encode(clean))
+    .map(b => {
+      const c = String.fromCharCode(b)
+      if (/[A-Za-z0-9!#$&+\-.^_`|~]/.test(c)) return c
+      return '%' + b.toString(16).toUpperCase().padStart(2, '0')
+    })
+    .join('')
+
+  return { simple, extended: `UTF-8''${encoded}` }
 }
 
 function formatRfc2822Date(date: Date): string {
@@ -318,6 +424,7 @@ function formatRfc2822Date(date: Date): string {
   return `${d}, ${day} ${mon} ${year} ${h}:${m}:${s} +0000`
 }
 
+/** RFC 2045 §6.8: base64 content-transfer-encoding, 76-char lines */
 function base64EncodeMime(buf: Buffer): string {
   const raw = buf.toString('base64')
   const lines: string[] = []
@@ -328,9 +435,11 @@ function base64EncodeMime(buf: Buffer): string {
 }
 
 function sanitizeFileName(name: string): string {
-  return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\.+$/, '').trim() || 'unnamed'
+  // eslint-disable-next-line no-control-regex
+  return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\.+$/, '').trim() || 'unnamed'
 }
 
+/** RFC 2046 §5.1.1: boundary max 70 chars, no trailing space */
 function generateBoundary(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
   let result = '----=_Part_'
@@ -371,25 +480,45 @@ function buildEml(msg: PSTMessage, options: ExportOptions): Uint8Array {
   const hasMultipleBodies = hasHtml && hasTxt
   const needsMultipart = hasMultipleBodies || hasAttachments
 
-  // Build headers
+  // ── Build headers (RFC 5322 + RFC 2047) ──────────────────────────────────
+
   const headers: string[] = []
-  const from = msg.senderEmailAddress
-    ? `${encodeRfc2047(msg.senderName || '')} <${msg.senderEmailAddress}>`
-    : encodeRfc2047(msg.senderName || 'Unknown')
-  headers.push(`From: ${from}`)
-  if (msg.displayTo) headers.push(`To: ${msg.displayTo}`)
-  if (msg.displayCC) headers.push(`CC: ${msg.displayCC}`)
-  headers.push(`Subject: ${encodeRfc2047(msg.subject || '(Kein Betreff)')}`)
+
+  // From: display-name + addr-spec (RFC 5322 §3.4)
+  const senderEmail = sanitizeEmail(msg.senderEmailAddress || '')
+  const senderName = sanitizeHeaderValue(msg.senderName || '')
+  if (senderEmail) {
+    headers.push(foldHeader(`From: ${encodeRfc2047(senderName)} <${senderEmail}>`))
+  } else {
+    headers.push(`From: ${encodeRfc2047(senderName || 'Unknown')}`)
+  }
+
+  // To/CC: sanitize + fold long address lists (RFC 5322 §2.1.1)
+  if (msg.displayTo) headers.push(foldHeader(`To: ${sanitizeHeaderValue(msg.displayTo)}`))
+  if (msg.displayCC) headers.push(foldHeader(`CC: ${sanitizeHeaderValue(msg.displayCC)}`))
+
+  // Subject: RFC 2047 encoded-words with auto-splitting
+  headers.push(`Subject: ${encodeRfc2047(sanitizeHeaderValue(msg.subject || '(Kein Betreff)'))}`)
+
+  // Date: RFC 2822 format
   const date = msg.clientSubmitTime || msg.messageDeliveryTime
   if (date) headers.push(`Date: ${formatRfc2822Date(date)}`)
-  const msgId = msg.internetMessageId || `<generated-${Date.now()}-${Math.random().toString(36).slice(2)}@pst-export>`
+
+  // Message-ID: preserve original or generate (RFC 5322 §3.6.4)
+  const rawMsgId = msg.internetMessageId || ''
+  const msgId = rawMsgId && rawMsgId.includes('@')
+    ? sanitizeHeaderValue(rawMsgId)
+    : `<generated-${Date.now()}-${Math.random().toString(36).slice(2)}@pst-export>`
   headers.push(`Message-ID: ${msgId}`)
+
   headers.push('MIME-Version: 1.0')
+
+  // ── Build MIME body ──────────────────────────────────────────────────────
 
   const parts: string[] = []
 
   if (!needsMultipart) {
-    // Single body part
+    // Single body part — no multipart wrapper needed
     if (hasHtml) {
       headers.push('Content-Type: text/html; charset="UTF-8"')
       headers.push('Content-Transfer-Encoding: base64')
@@ -408,25 +537,25 @@ function buildEml(msg: PSTMessage, options: ExportOptions): Uint8Array {
       parts.push('')
     }
   } else {
-    // Multipart
-    headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`)
+    // Multipart message
+    headers.push(`Content-Type: multipart/mixed;\r\n boundary="${boundary}"`)
     parts.push(headers.join('\r\n'))
     parts.push('')
 
     // Body section
     if (hasMultipleBodies) {
-      // Wrap HTML+TXT in multipart/alternative
+      // Wrap HTML+TXT in multipart/alternative (RFC 2046 §5.1.4)
       parts.push(`--${boundary}`)
-      parts.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`)
+      parts.push(`Content-Type: multipart/alternative;\r\n boundary="${altBoundary}"`)
       parts.push('')
-      // TXT part
+      // TXT part (first = least preferred, per RFC 2046 §5.1.4)
       parts.push(`--${altBoundary}`)
       parts.push('Content-Type: text/plain; charset="UTF-8"')
       parts.push('Content-Transfer-Encoding: base64')
       parts.push('')
       parts.push(base64EncodeMime(Buffer.from(txtBody, 'utf-8')))
       parts.push('')
-      // HTML part
+      // HTML part (last = most preferred)
       parts.push(`--${altBoundary}`)
       parts.push('Content-Type: text/html; charset="UTF-8"')
       parts.push('Content-Transfer-Encoding: base64')
@@ -448,13 +577,25 @@ function buildEml(msg: PSTMessage, options: ExportOptions): Uint8Array {
       parts.push(base64EncodeMime(Buffer.from(txtBody, 'utf-8')))
     }
 
-    // Attachment parts
+    // Attachment parts (RFC 2183 Content-Disposition + RFC 2231 filenames)
     for (const att of attachments) {
       parts.push('')
       parts.push(`--${boundary}`)
-      parts.push(`Content-Type: ${att.mimeType}; name="${encodeRfc2047(att.fileName)}"`)
+      const { simple, extended } = encodeFilenameParams(att.fileName)
+      const mimeType = sanitizeHeaderValue(att.mimeType)
+      // Content-Type: include both name= (legacy) and name*= (RFC 2231) when non-ASCII
+      if (extended) {
+        parts.push(`Content-Type: ${mimeType};\r\n name=${simple};\r\n name*=${extended}`)
+      } else {
+        parts.push(`Content-Type: ${mimeType}; name=${simple}`)
+      }
       parts.push('Content-Transfer-Encoding: base64')
-      parts.push(`Content-Disposition: attachment; filename="${encodeRfc2047(att.fileName)}"`)
+      // Content-Disposition: include both filename= and filename*= (RFC 2231 §4)
+      if (extended) {
+        parts.push(`Content-Disposition: attachment;\r\n filename=${simple};\r\n filename*=${extended}`)
+      } else {
+        parts.push(`Content-Disposition: attachment; filename=${simple}`)
+      }
       parts.push('')
       parts.push(base64EncodeMime(att.data))
     }
@@ -857,7 +998,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
               ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
               : 'undatiert'
             const subject = sanitizeFileName(msg.subject || 'Kein Betreff').slice(0, 80)
-            let baseName = `${datePrefix} ${subject}`
+            const baseName = `${datePrefix} ${subject}`
             const count = usedNames.get(baseName) || 0
             usedNames.set(baseName, count + 1)
             const fileName = count > 0 ? `${baseName} (${count + 1}).eml` : `${baseName}.eml`
@@ -883,6 +1024,78 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         const zipBuffer = zipData.buffer.slice(zipData.byteOffset, zipData.byteOffset + zipData.byteLength) as ArrayBuffer
 
         const exportFileName = `PST-Export_${new Date().toISOString().slice(0, 10)}.zip`
+        post({ type: 'EXPORT_READY', zipBuffer, fileName: exportFileName })
+        break
+      }
+
+      case 'EXPORT_FOLDER': {
+        const myOpId = ++loadOpId
+        const { folderPath, options } = cmd
+
+        const folder = folderCache.get(folderPath)
+        if (!folder) {
+          post({ type: 'ERROR', message: `Ordner nicht gefunden: ${folderPath}` })
+          return
+        }
+
+        const totalCount = folder.contentCount
+        if (totalCount === 0) {
+          post({ type: 'ERROR', message: 'Keine E-Mails zum Exportieren.' })
+          return
+        }
+
+        post({ type: 'PROGRESS', message: `Export wird vorbereitet... (0 / ${totalCount})` })
+
+        const files: Record<string, Uint8Array> = {}
+        const usedNames = new Map<string, number>()
+
+        try {
+          folder.moveChildCursorTo(0)
+          let msg: PSTMessage | null = folder.getNextChild()
+          let idx = 0
+
+          while (msg != null) {
+            if (loadOpId !== myOpId) return // aborted
+
+            try {
+              const emlData = buildEml(msg, options)
+
+              const date = msg.clientSubmitTime || msg.messageDeliveryTime
+              const datePrefix = date
+                ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+                : 'undatiert'
+              const subject = sanitizeFileName(msg.subject || 'Kein Betreff').slice(0, 80)
+              const baseName = `${datePrefix} ${subject}`
+              const count = usedNames.get(baseName) || 0
+              usedNames.set(baseName, count + 1)
+              const fileName = count > 0 ? `${baseName} (${count + 1}).eml` : `${baseName}.eml`
+
+              files[fileName] = emlData
+            } catch { /* skip broken email */ }
+
+            idx++
+            if (idx % 10 === 0 || idx === totalCount) {
+              post({ type: 'PROGRESS', message: `E-Mails werden exportiert... (${idx} / ${totalCount})` })
+              await yieldToMessageLoop()
+              if (loadOpId !== myOpId) return
+            }
+
+            msg = folder.getNextChild()
+          }
+        } catch { /* folder iteration error */ }
+
+        if (loadOpId !== myOpId) return
+
+        post({ type: 'PROGRESS', message: 'ZIP wird erstellt...' })
+        await yieldToMessageLoop()
+        if (loadOpId !== myOpId) return
+
+        const zipData = zipSync(files)
+        const zipBuffer = zipData.buffer.slice(zipData.byteOffset, zipData.byteOffset + zipData.byteLength) as ArrayBuffer
+
+        // Use folder name for zip filename
+        const folderName = sanitizeFileName(folderPath.split(' / ').pop() || 'Ordner')
+        const exportFileName = `${folderName}_${new Date().toISOString().slice(0, 10)}.zip`
         post({ type: 'EXPORT_READY', zipBuffer, fileName: exportFileName })
         break
       }
