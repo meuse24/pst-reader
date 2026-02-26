@@ -30,6 +30,47 @@ function formatDate(iso: string | null): string {
   } catch { return '' }
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value))
+}
+
+const MIN_SIDEBAR = 180
+const MAX_SIDEBAR = 500
+const MIN_LIST = 280
+const MAX_LIST = 800
+
+// ─── ResizeHandle ────────────────────────────────────────────────────────────
+
+function ResizeHandle({ onDrag }: { onDrag: (delta: number) => void }) {
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    let lastX = e.clientX
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+
+    const onMove = (me: MouseEvent) => {
+      const delta = me.clientX - lastX
+      lastX = me.clientX
+      onDrag(delta)
+    }
+    const onUp = () => {
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }, [onDrag])
+
+  return (
+    <div
+      className="w-1 flex-shrink-0 bg-gray-200 hover:bg-blue-400 cursor-col-resize transition-colors"
+      onMouseDown={onMouseDown}
+    />
+  )
+}
+
 // ─── UI components ───────────────────────────────────────────────────────────
 
 function FolderTreeItem({
@@ -292,6 +333,7 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
               <tbody className="text-gray-600">
                 <tr><td className="py-1 pr-4 font-mono text-xs">Strg+O</td><td>PST-Datei &ouml;ffnen</td></tr>
                 <tr><td className="py-1 pr-4 font-mono text-xs">Strg+F</td><td>Suche &ouml;ffnen</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">Strg+B</td><td>Ordnerleiste ein-/ausblenden</td></tr>
                 <tr><td className="py-1 pr-4 font-mono text-xs">Escape</td><td>Suche schliessen / Hilfe schliessen</td></tr>
                 <tr><td className="py-1 pr-4 font-mono text-xs">F1</td><td>Hilfe anzeigen</td></tr>
               </tbody>
@@ -440,6 +482,8 @@ function MenuBar({
   onCloseFile,
   onShowHelp,
   onShowInfo,
+  sidebarVisible,
+  onToggleSidebar,
 }: {
   fileName: string
   fileSize: number
@@ -448,6 +492,8 @@ function MenuBar({
   onCloseFile: () => void
   onShowHelp: () => void
   onShowInfo: () => void
+  sidebarVisible: boolean
+  onToggleSidebar: () => void
 }) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -471,6 +517,15 @@ function MenuBar({
 
   return (
     <div className="h-9 bg-gray-800 flex items-center px-2 gap-3 flex-shrink-0" ref={menuRef}>
+      <button
+        className="px-2 py-1 text-sm text-gray-300 hover:bg-gray-700 hover:text-white rounded transition"
+        onClick={onToggleSidebar}
+        title={sidebarVisible ? 'Ordnerleiste ausblenden (Strg+B)' : 'Ordnerleiste einblenden (Strg+B)'}
+      >
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
       <div className="relative">
         <button
           className={`px-3 py-1 text-sm rounded transition ${
@@ -569,6 +624,9 @@ function App() {
   const [exportOptions, setExportOptions] = useState<ExportOptions>({ includeHTML: true, includeTXT: true, includeAttachments: false })
   const [showHelp, setShowHelp] = useState(false)
   const [showInfo, setShowInfo] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(256)
+  const [listWidth, setListWidth] = useState(384)
+  const [sidebarVisible, setSidebarVisible] = useState(true)
 
   const debouncedQuery = useDebounce(searchQuery, 200)
   const isSearching = debouncedQuery.trim().length > 0
@@ -694,6 +752,10 @@ function App() {
         e.preventDefault()
         setShowHelp(true)
       }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        e.preventDefault()
+        setSidebarVisible(v => !v)
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -728,6 +790,8 @@ function App() {
           onCloseFile={handleClose}
           onShowHelp={() => setShowHelp(true)}
           onShowInfo={() => setShowInfo(true)}
+          sidebarVisible={sidebarVisible}
+          onToggleSidebar={() => setSidebarVisible(v => !v)}
         />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center p-12 border-2 border-dashed border-gray-300 rounded-xl max-w-lg w-full mx-4 bg-white">
@@ -803,22 +867,27 @@ function App() {
         onCloseFile={handleClose}
         onShowHelp={() => setShowHelp(true)}
         onShowInfo={() => setShowInfo(true)}
+        sidebarVisible={sidebarVisible}
+        onToggleSidebar={() => setSidebarVisible(v => !v)}
       />
 
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
-        <div className="w-64 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col">
-          <div className="flex-1 overflow-y-auto py-1">
-            <FolderTreeItem
-              folder={pst.tree}
-              selectedPath={selectedFolderPath || ''}
-              onSelect={handleFolderSelect}
-            />
+        {sidebarVisible && (
+          <div style={{ width: sidebarWidth }} className="flex-shrink-0 bg-white border-r border-gray-200 flex flex-col">
+            <div className="flex-1 overflow-y-auto py-1">
+              <FolderTreeItem
+                folder={pst.tree}
+                selectedPath={selectedFolderPath || ''}
+                onSelect={handleFolderSelect}
+              />
+            </div>
           </div>
-        </div>
+        )}
+        {sidebarVisible && <ResizeHandle onDrag={d => setSidebarWidth(w => clamp(w + d, MIN_SIDEBAR, MAX_SIDEBAR))} />}
 
         {/* Email List */}
-        <div className="w-96 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col">
+        <div style={{ width: listWidth }} className="flex-shrink-0 bg-white border-r border-gray-200 flex flex-col">
           {/* Search Bar */}
           <div className="p-2 border-b border-gray-200">
             <div className="relative">
@@ -914,8 +983,10 @@ function App() {
           />
         </div>
 
+        <ResizeHandle onDrag={d => setListWidth(w => clamp(w + d, MIN_LIST, MAX_LIST))} />
+
         {/* Email Detail */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
           {selectedEmail ? (
             <>
               <div className="p-4 border-b border-gray-200 bg-white">
