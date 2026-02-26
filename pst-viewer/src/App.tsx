@@ -1,7 +1,43 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import { Component, useState, useCallback, useMemo, useRef, useEffect } from 'react'
+import type { ReactNode, ErrorInfo } from 'react'
 import { usePSTWorker, bodyKey } from './usePSTWorker.ts'
 import { VirtualEmailList } from './VirtualEmailList.tsx'
 import type { FolderNode, EmailMeta, ExportOptions } from './types.ts'
+
+// ─── Error Boundary ──────────────────────────────────────────────────────────
+
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('ErrorBoundary:', error, info.componentStack)
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex items-center justify-center min-h-screen bg-gray-50 p-8">
+          <div className="text-center max-w-lg">
+            <div className="text-5xl mb-4">&#9888;</div>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">Ein unerwarteter Fehler ist aufgetreten</h1>
+            <p className="text-gray-500 mb-4 font-mono text-sm break-all">{this.state.error.message}</p>
+            <button
+              className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition"
+              onClick={() => this.setState({ error: null })}
+            >
+              Erneut versuchen
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -484,6 +520,7 @@ function MenuBar({
   onShowInfo,
   sidebarVisible,
   onToggleSidebar,
+  loading,
 }: {
   fileName: string
   fileSize: number
@@ -494,6 +531,7 @@ function MenuBar({
   onShowInfo: () => void
   sidebarVisible: boolean
   onToggleSidebar: () => void
+  loading: boolean
 }) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -538,7 +576,8 @@ function MenuBar({
         {open && (
           <div className="absolute top-full left-0 mt-1 w-64 bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-50">
             <button
-              className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700 flex items-center gap-3"
+              className={`w-full text-left px-4 py-2 text-sm flex items-center gap-3 ${loading ? 'text-gray-400 cursor-not-allowed' : 'text-gray-700 hover:bg-blue-50 hover:text-blue-700'}`}
+              disabled={loading}
               onClick={() => {
                 fileInputRef.current?.click()
                 setOpen(false)
@@ -620,6 +659,8 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const loadingRef = useRef(pst.loading)
+  loadingRef.current = pst.loading
 
   const [exportOptions, setExportOptions] = useState<ExportOptions>({ includeHTML: true, includeTXT: true, includeAttachments: false })
   const [showHelp, setShowHelp] = useState(false)
@@ -704,6 +745,11 @@ function App() {
   }, [])
 
   const handleFile = useCallback((file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (ext !== 'pst' && ext !== 'ost') {
+      alert('Bitte eine PST- oder OST-Datei auswählen.')
+      return
+    }
     setSelectedEmail(null)
     setSelectedFolderPath(null)
     setSearchQuery('')
@@ -722,6 +768,7 @@ function App() {
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
+      if (loadingRef.current) return
       const file = e.dataTransfer.files[0]
       if (file) handleFile(file)
     },
@@ -742,7 +789,7 @@ function App() {
       }
       if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
         e.preventDefault()
-        fileInputRef.current?.click()
+        if (!loadingRef.current) fileInputRef.current?.click()
       }
       if (e.key === 'Escape' && isSearching) {
         setSearchQuery('')
@@ -792,6 +839,7 @@ function App() {
           onShowInfo={() => setShowInfo(true)}
           sidebarVisible={sidebarVisible}
           onToggleSidebar={() => setSidebarVisible(v => !v)}
+          loading={pst.loading}
         />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center p-12 border-2 border-dashed border-gray-300 rounded-xl max-w-lg w-full mx-4 bg-white">
@@ -809,25 +857,42 @@ function App() {
                   </svg>
                   {pst.loadingMsg}
                 </div>
-                {pst.progress > 0 && (
-                  <div className="w-full bg-gray-200 rounded-full h-2">
+                {pst.loadingPhase === 'copy' && (
+                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
                     <div
                       className="bg-blue-600 h-2 rounded-full transition-all duration-300"
                       style={{ width: `${pst.progress}%` }}
                     />
                   </div>
                 )}
+                {pst.loadingPhase === 'parse' && (
+                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full animate-[indeterminate_1.5s_ease-in-out_infinite]"
+                      style={{ width: '30%' }}
+                    />
+                  </div>
+                )}
+                {pst.loadingPhase && (
+                  <button
+                    className="mt-3 px-4 py-1.5 text-sm text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition"
+                    onClick={pst.abortLoad}
+                  >
+                    Abbrechen
+                  </button>
+                )}
               </div>
             )}
             {pst.error && (
               <div className="mb-4 text-red-600 bg-red-50 p-3 rounded">{pst.error}</div>
             )}
-            <label className="inline-block bg-blue-600 text-white px-6 py-3 rounded-lg cursor-pointer hover:bg-blue-700 transition">
+            <label className={`inline-block px-6 py-3 rounded-lg transition ${pst.loading ? 'bg-gray-400 text-gray-200 cursor-not-allowed' : 'bg-blue-600 text-white cursor-pointer hover:bg-blue-700'}`}>
               PST-Datei ausw&auml;hlen
               <input
                 type="file"
                 accept=".pst,.ost"
                 className="hidden"
+                disabled={pst.loading}
                 onChange={(e) => {
                   const file = e.target.files?.[0]
                   if (file) handleFile(file)
@@ -844,6 +909,7 @@ function App() {
           type="file"
           accept=".pst,.ost"
           className="hidden"
+          disabled={pst.loading}
           onChange={(e) => {
             const file = e.target.files?.[0]
             if (file) handleFile(file)
@@ -869,7 +935,19 @@ function App() {
         onShowInfo={() => setShowInfo(true)}
         sidebarVisible={sidebarVisible}
         onToggleSidebar={() => setSidebarVisible(v => !v)}
+        loading={pst.loading}
       />
+
+      {pst.error && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2 flex items-center gap-2 text-sm text-red-700">
+          <span className="flex-1">{pst.error}</span>
+          <button
+            className="text-red-400 hover:text-red-600 flex-shrink-0"
+            onClick={pst.clearError}
+            title="Schließen"
+          >&#10005;</button>
+        </div>
+      )}
 
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
@@ -990,9 +1068,22 @@ function App() {
           {selectedEmail ? (
             <>
               <div className="p-4 border-b border-gray-200 bg-white">
-                <h2 className="text-lg font-semibold text-gray-900 mb-2">
-                  {selectedEmail.subject}
-                </h2>
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    {selectedEmail.subject}
+                  </h2>
+                  <button
+                    onClick={() => pst.shareEmail(selectedEmail.folderPath, selectedEmail.index)}
+                    title="E-Mail teilen"
+                    className="shrink-0 p-1.5 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition"
+                  >
+                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M4 12v7a2 2 0 002 2h12a2 2 0 002-2v-7" />
+                      <polyline points="16 6 12 2 8 6" />
+                      <line x1="12" y1="2" x2="12" y2="15" />
+                    </svg>
+                  </button>
+                </div>
                 <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
                   <span className="text-gray-400">Von:</span>
                   <span className="text-gray-700">
@@ -1021,9 +1112,10 @@ function App() {
                 {selectedEmail.hasAttachments && (
                   <div className="mt-2 flex flex-wrap gap-2">
                     {selectedEmail.attachmentNames.map((name, i) => (
-                      <span key={i} className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 rounded text-xs text-gray-600">
+                      <button key={i} onClick={() => pst.fetchAttachment(selectedEmail.folderPath, selectedEmail.index, i)}
+                        className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 rounded text-xs text-gray-600 hover:bg-blue-100 hover:text-blue-700 cursor-pointer transition">
                         &#128206; {name}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 )}
@@ -1080,4 +1172,12 @@ function App() {
   )
 }
 
-export default App
+function AppWithErrorBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  )
+}
+
+export default AppWithErrorBoundary

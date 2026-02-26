@@ -10,6 +10,7 @@ export interface PSTWorkerState {
   loading: boolean
   loadingMsg: string
   progress: number
+  loadingPhase: 'copy' | 'parse' | null
   error: string | null
   folderEmails: Map<string, EmailMeta[]>
   bodyCache: Map<string, { body: string; bodyHTML: string }>
@@ -26,8 +27,12 @@ export interface PSTWorkerActions {
   fetchBody: (folderPath: string, index: number) => void
   search: (query: string) => void
   closeFile: () => void
+  clearError: () => void
   exportEmails: (emails: Array<{ folderPath: string; index: number }>, options: ExportOptions) => void
   exportFolder: (folderPath: string, options: ExportOptions) => void
+  fetchAttachment: (folderPath: string, index: number, attachmentIndex: number) => void
+  shareEmail: (folderPath: string, index: number) => void
+  abortLoad: () => void
 }
 
 const MAX_BODY_CACHE = 100
@@ -47,6 +52,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
   const [loading, setLoading] = useState(true)
   const [loadingMsg, setLoadingMsg] = useState('Gespeicherte Datei wird geladen...')
   const [progress, setProgress] = useState(0)
+  const [loadingPhase, setLoadingPhase] = useState<'copy' | 'parse' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [folderEmails, setFolderEmails] = useState<Map<string, EmailMeta[]>>(new Map())
   const [bodyCache, setBodyCache] = useState<Map<string, { body: string; bodyHTML: string }>>(new Map())
@@ -84,6 +90,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           setLoading(false)
           setLoadingMsg('')
           setProgress(0)
+          setLoadingPhase(null)
           setError(null)
           setFolderEmails(new Map())
           setBodyCache(new Map())
@@ -151,6 +158,37 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           setSearchResults(msg.results)
           break
 
+        case 'ATTACHMENT_DATA': {
+          const blob = new Blob([msg.data], { type: msg.mimeType })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = msg.fileName
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+          break
+        }
+
+        case 'EML_READY': {
+          const blob = new Blob([msg.data], { type: 'message/rfc822' })
+          const file = new File([blob], msg.fileName, { type: 'message/rfc822' })
+          if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [file] })) {
+            navigator.share({ files: [file] }).catch(() => { /* user cancelled */ })
+          } else {
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = msg.fileName
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+          }
+          break
+        }
+
         case 'EXPORT_READY': {
           setExporting(false)
           setLoadingMsg('')
@@ -170,16 +208,17 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
         case 'PROGRESS':
           setLoadingMsg(msg.message)
           if (msg.percent !== undefined) setProgress(msg.percent)
+          setLoadingPhase(msg.phase ?? null)
           break
 
         case 'ERROR':
-          if (msg.message) {
-            setError(msg.message)
-          }
+          // Empty message = silent signal (e.g. no cache found) — reset loading without showing error
+          if (msg.message) setError(msg.message)
           setLoading(false)
           setExporting(false)
           setLoadingMsg('')
           setProgress(0)
+          setLoadingPhase(null)
           break
 
         case 'CACHE_DELETED':
@@ -193,6 +232,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           setSearchResults(null)
           setError(null)
           setProgress(0)
+          setLoadingPhase(null)
           setSearchableFolderCount(0)
           setFolderTotalCounts(new Map())
           setFolderLoadingPaths(new Set())
@@ -218,6 +258,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     setLoading(true)
     setLoadingMsg('Datei wird vorbereitet...')
     setProgress(0)
+    setLoadingPhase(null)
     setError(null)
     setSearchResults(null)
     send({ type: 'LOAD_FILE', file })
@@ -241,6 +282,10 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     send({ type: 'DELETE_CACHE' })
   }, [send])
 
+  const clearError = useCallback(() => {
+    setError(null)
+  }, [])
+
   const exportEmails = useCallback((emails: Array<{ folderPath: string; index: number }>, options: ExportOptions) => {
     setExporting(true)
     setLoadingMsg('Export wird vorbereitet...')
@@ -253,14 +298,26 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     send({ type: 'EXPORT_FOLDER', folderPath, options })
   }, [send])
 
+  const fetchAttachment = useCallback((folderPath: string, index: number, attachmentIndex: number) => {
+    send({ type: 'FETCH_ATTACHMENT', folderPath, index, attachmentIndex })
+  }, [send])
+
+  const shareEmail = useCallback((folderPath: string, index: number) => {
+    send({ type: 'BUILD_EML', folderPath, index })
+  }, [send])
+
+  const abortLoad = useCallback(() => {
+    send({ type: 'ABORT_LOAD' })
+  }, [send])
+
   return {
     tree, fileName, fileSize, savedAt,
-    loading, loadingMsg, progress, error,
+    loading, loadingMsg, progress, loadingPhase, error,
     folderEmails, bodyCache, searchResults,
     indexedFolderCount,
     folderTotalCounts, folderLoadingPaths,
     exporting,
-    loadFile, fetchFolder, fetchBody, search, closeFile, exportEmails, exportFolder,
+    loadFile, fetchFolder, fetchBody, search, closeFile, clearError, exportEmails, exportFolder, fetchAttachment, shareEmail, abortLoad,
   }
 }
 

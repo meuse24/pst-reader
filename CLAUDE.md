@@ -48,16 +48,20 @@ Alle schwere Arbeit laeuft im Worker-Thread:
   - RFC 2822 Datums-Format, Header-Injection-Schutz (CR/LF-Sanitizing)
   - ZIP via `fflate` (zipSync). Fortschritt alle 10 Mails, Abbruch via `loadOpId`.
   - Warnung bei grossen Exporten (>=1000 Mails oder >=500 Mails mit Anhaengen)
+- **E-Mail teilen**: `BUILD_EML` Command baut einzelne EML-Datei. Web Share API (`navigator.share({ files })`) wenn verfuegbar, sonst Fallback auf .eml-Download.
+- **Fortschrittsanzeige**: Zwei Phasen — Copy-Phase (determinierter Balken mit Prozent, Updates alle ~2s) und Parse-Phase (indeterminierter Balken, gelesene Bytes alle ~2s via instrumentiertem `readSync`). Parse-Fortschritt wird direkt aus synchronem Code via `postMessage` gemeldet (non-blocking im Worker).
+- **Ladevorgang abbrechen**: `ABORT_LOAD` Command inkrementiert `loadOpId`, laufende Lade-Operationen brechen beim naechsten Check ab. `yieldToMessageLoop()` (setTimeout 0) im Copy-Loop alle ~2s gibt Macrotask-Queue frei, damit `ABORT_LOAD` verarbeitet werden kann. Parse-Phase (synchron) ist nicht abbrechbar.
+- **UI-Sperre waehrend Laden**: Datei-oeffnen-Button, Menue-Eintrag, Strg+O und Drag & Drop sind waehrend `loading` deaktiviert.
 
 ### Worker-Kommunikation (`types.ts`)
 Typisierte Messages:
-- **Commands** (Main -> Worker): `LOAD_FILE`, `LOAD_BUFFER`, `LOAD_CACHED`, `DELETE_CACHE`, `FETCH_FOLDER`, `FETCH_BODY`, `SEARCH`, `EXPORT_EMAILS`, `EXPORT_FOLDER`
-- **Responses** (Worker -> Main): `READY`, `FOLDER_EMAILS` (mit `totalCount` + `page`), `FOLDER_DONE`, `EMAIL_BODY`, `SEARCH_RESULTS`, `PROGRESS`, `ERROR`, `EXPORT_READY`, `CACHE_DELETED`
+- **Commands** (Main -> Worker): `LOAD_FILE`, `LOAD_BUFFER`, `LOAD_CACHED`, `DELETE_CACHE`, `FETCH_FOLDER`, `FETCH_BODY`, `SEARCH`, `EXPORT_EMAILS`, `EXPORT_FOLDER`, `FETCH_ATTACHMENT`, `BUILD_EML`, `ABORT_LOAD`
+- **Responses** (Worker -> Main): `READY`, `FOLDER_EMAILS` (mit `totalCount` + `page`), `FOLDER_DONE`, `EMAIL_BODY`, `SEARCH_RESULTS`, `PROGRESS` (mit `phase: 'copy' | 'parse'`), `ERROR`, `EXPORT_READY`, `ATTACHMENT_DATA`, `EML_READY`, `CACHE_DELETED`
 
 ### React Hook (`usePSTWorker.ts`)
 - Kapselt Worker-Lifecycle + Message-Handling
-- Exponiert: `loadFile()`, `fetchFolder()`, `fetchBody()`, `search()`, `closeFile()`, `exportEmails()`, `exportFolder()`
-- State: `tree`, `folderEmails` Map, `bodyCache` Map, `searchResults`, Loading/Error
+- Exponiert: `loadFile()`, `fetchFolder()`, `fetchBody()`, `search()`, `closeFile()`, `exportEmails()`, `exportFolder()`, `fetchAttachment()`, `shareEmail()`, `abortLoad()`
+- State: `tree`, `folderEmails` Map, `bodyCache` Map, `searchResults`, `loadingPhase`, Loading/Error
 - `bodyCache` wird zusaetzlich als Ref gefuehrt um stale closures in `fetchBody` zu vermeiden
 - `indexedFolderCount` wird aus `folderEmails.size` abgeleitet (kein eigener State)
 - **Paginierung**: `folderTotalCounts` (Map path->Gesamtzahl), `folderLoadingPaths` (Set der aktuell ladenden Ordner). `FOLDER_EMAILS` mit `page===0` ersetzt Array + setzt `folderLoadingPaths` auf nur diesen Pfad (raeumt gecancelte Pfade automatisch auf). `page>0` appendet. `FOLDER_DONE` entfernt aus `folderLoadingPaths`.
@@ -109,6 +113,9 @@ Die Build-Ausgabe wird auch nach `pst-viewer.html` im Projekt-Root kopiert.
 - Virtualisierte E-Mail-Liste
 - **EML-Export**: Suchergebnisse oder ganze Ordner als EML in ZIP exportieren (HTML/TXT/Attachments waehlbar, strikt RFC-konform, im Worker). Warnung bei grossen Exporten.
 - **Ordner-Export**: `EXPORT_FOLDER` Command — iteriert Ordner direkt via Cursor (effizienter als Einzel-Lookups)
+- **E-Mail teilen**: Einzelne E-Mail per Web Share API oder .eml-Download teilen (Share-Button im Detail-Header)
+- **Fortschrittsanzeige**: Copy-Phase mit determiniertem Balken + Prozent, Parse-Phase mit indeterminiertem Balken + gelesene Bytes. Throttled auf ~2s-Intervalle um Ladevorgang nicht auszubremsen.
+- **Abbrechen-Button**: Ladevorgang waehrend Copy- und Parse-Phase abbrechbar. UI-Sperre verhindert gleichzeitiges Oeffnen weiterer Dateien.
 - **Hilfe-Dialog**: Ausfuehrliche Hilfe mit Tastenkuerzeln, Browser-Kompatibilitaet, Datenschutz
 - **Info-Dialog**: Copyright, Tech Stack, Bibliotheken mit Autor/Version/Lizenz, Dank an AI-Tools
 - Ziel: PST-Dateien bis 1GB+ fluessig verarbeiten

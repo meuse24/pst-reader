@@ -54,7 +54,10 @@ export type WorkerCommand =
   | { type: 'FETCH_BODY'; folderPath: string; index: number }
   | { type: 'SEARCH'; query: string }
   | { type: 'EXPORT_EMAILS'; emails: Array<{ folderPath: string; index: number }>; options: ExportOptions }
+  | { type: 'FETCH_ATTACHMENT'; folderPath: string; index: number; attachmentIndex: number }
   | { type: 'EXPORT_FOLDER'; folderPath: string; options: ExportOptions }
+  | { type: 'BUILD_EML'; folderPath: string; index: number }
+  | { type: 'ABORT_LOAD' }
 
 // ─── Worker responses (worker → main) ────────────────────────────────────────
 
@@ -67,4 +70,6 @@ export type WorkerResponse =
   | { type: 'PROGRESS'; message: string; percent?: number; phase?: 'copy' | 'parse' }
   | { type: 'ERROR'; message: string }
   | { type: 'EXPORT_READY'; zipBuffer: ArrayBuffer; fileName: string }
+  | { type: 'ATTACHMENT_DATA'; fileName: string; mimeType: string; data: ArrayBuffer }
+  | { type: 'EML_READY'; data: ArrayBuffer; fileName: string }
   | { type: 'CACHE_DELETED' }

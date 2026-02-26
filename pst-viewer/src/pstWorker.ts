@@ -133,7 +133,23 @@ async function clearMetadataFromIDB(): Promise<void> {
   })
 }
 
-// ─── readSync Monkey-Patch ──────────────────────────────────────────────────
+// ─── readSync Monkey-Patch with parse progress ─────────────────────────────
+
+let parseProgressEnabled = false
+let parseBytesRead = 0
+let parseLastReportTime = 0
+const PARSE_PROGRESS_INTERVAL = 2000
+
+function reportParseProgress() {
+  const now = performance.now()
+  if (now - parseLastReportTime < PARSE_PROGRESS_INTERVAL) return
+  parseLastReportTime = now
+  post({
+    type: 'PROGRESS',
+    message: `PST wird verarbeitet... (${formatBytes(parseBytesRead)} gelesen)`,
+    phase: 'parse',
+  })
+}
 
 function patchReadSync() {
   pstProto.readSync = function (
@@ -145,12 +161,83 @@ function patchReadSync() {
     if (bytesRead < length) {
       throw new Error(`Short read: expected ${length}, got ${bytesRead} at position ${position}`)
     }
+    if (parseProgressEnabled) {
+      parseBytesRead += bytesRead
+      reportParseProgress()
+    }
     return bytesRead
   }
 }
 
 function restoreReadSync() {
   pstProto.readSync = originalReadSync
+}
+
+// ─── FileReaderSync chunk cache (for file:// URLs without OPFS) ─────────────
+
+let fileRef: File | null = null
+
+const CHUNK_SIZE = 4 * 1024 * 1024 // 4 MB
+const MAX_CHUNKS = 8               // 32 MB max cache
+const chunkCache = new Map<number, ArrayBuffer>()
+const chunkLRU: number[] = []
+
+function readChunk(chunkIndex: number): ArrayBuffer {
+  const cached = chunkCache.get(chunkIndex)
+  if (cached) {
+    const i = chunkLRU.indexOf(chunkIndex)
+    if (i >= 0) chunkLRU.splice(i, 1)
+    chunkLRU.push(chunkIndex)
+    return cached
+  }
+  if (!fileRef) throw new Error('Datei-Referenz nicht verfügbar — wurde die Datei entfernt?')
+  const start = chunkIndex * CHUNK_SIZE
+  const end = Math.min(start + CHUNK_SIZE, fileRef.size)
+  const slice = fileRef.slice(start, end)
+  let ab: ArrayBuffer
+  try {
+    const reader = new FileReaderSync()
+    ab = reader.readAsArrayBuffer(slice)
+  } catch (err) {
+    throw new Error(`Datei konnte nicht gelesen werden (Position ${start}): ${err instanceof Error ? err.message : String(err)}`)
+  }
+  while (chunkCache.size >= MAX_CHUNKS) {
+    const oldest = chunkLRU.shift()!
+    chunkCache.delete(oldest)
+  }
+  chunkCache.set(chunkIndex, ab)
+  chunkLRU.push(chunkIndex)
+  return ab
+}
+
+function clearChunkCache() {
+  chunkCache.clear()
+  chunkLRU.length = 0
+}
+
+function patchReadSyncFile() {
+  pstProto.readSync = function (
+    buffer: Buffer, length: number, position: number
+  ): number {
+    if (!fileRef) throw new Error('File reference not available')
+    const dest = new Uint8Array(buffer.buffer as ArrayBuffer, buffer.byteOffset, length)
+    let bytesRead = 0
+    while (bytesRead < length) {
+      const absPos = position + bytesRead
+      const chunkIndex = Math.floor(absPos / CHUNK_SIZE)
+      const chunkData = readChunk(chunkIndex)
+      const offsetInChunk = absPos - chunkIndex * CHUNK_SIZE
+      const available = chunkData.byteLength - offsetInChunk
+      const toCopy = Math.min(available, length - bytesRead)
+      dest.set(new Uint8Array(chunkData, offsetInChunk, toCopy), bytesRead)
+      bytesRead += toCopy
+    }
+    if (parseProgressEnabled) {
+      parseBytesRead += bytesRead
+      reportParseProgress()
+    }
+    return bytesRead
+  }
 }
 
 // ─── PST helpers ─────────────────────────────────────────────────────────────
@@ -233,6 +320,8 @@ function yieldToMessageLoop(): Promise<void> {
 function resetState() {
   pstFile = null
   pstBuffer = null
+  fileRef = null
+  clearChunkCache()
   currentFileName = ''
   currentFileSize = 0
   opfsMode = false
@@ -259,15 +348,40 @@ function initPSTFromOPFS(fileName: string, fileSize: number): FolderNode {
   patchReadSync()
   opfsMode = true
   pstBuffer = null
+  currentFileName = fileName
+  currentFileSize = fileSize
+  parseBytesRead = 0
+  parseLastReportTime = 0
+  parseProgressEnabled = true
   // PSTFile constructor reads 514 bytes via readSync immediately
   // Passing a 1-byte buffer — readSync is patched so it doesn't use pstBuffer
   pstFile = new PSTFile(Buffer.alloc(1))
-  currentFileName = fileName
-  currentFileSize = fileSize
   folderCache.clear()
   emailCache.clear()
 
-  return buildFolderTree(pstFile.getRootFolder())
+  const tree = buildFolderTree(pstFile.getRootFolder())
+  parseProgressEnabled = false
+  return tree
+}
+
+function initPSTFromFile(file: File): FolderNode {
+  fileRef = file
+  clearChunkCache()
+  patchReadSyncFile()
+  opfsMode = true // skip per-email body snippets (FileReaderSync I/O is slow)
+  pstBuffer = null
+  currentFileName = file.name
+  currentFileSize = file.size
+  parseBytesRead = 0
+  parseLastReportTime = 0
+  parseProgressEnabled = true
+  pstFile = new PSTFile(Buffer.alloc(1))
+  folderCache.clear()
+  emailCache.clear()
+
+  const tree = buildFolderTree(pstFile.getRootFolder())
+  parseProgressEnabled = false
+  return tree
 }
 
 // ─── OPFS file operations ───────────────────────────────────────────────────
@@ -610,8 +724,12 @@ function buildEml(msg: PSTMessage, options: ExportOptions): Uint8Array {
 
 // ─── Message handler ─────────────────────────────────────────────────────────
 
-function post(msg: WorkerResponse) {
-  postMessage(msg)
+function post(msg: WorkerResponse, transfer?: Transferable[]) {
+  if (transfer) {
+    postMessage(msg, transfer)
+  } else {
+    postMessage(msg)
+  }
 }
 
 self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
@@ -630,16 +748,10 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         const opfsOk = await probeOpfs()
 
         if (!opfsOk) {
-          // Legacy fallback for small files
-          if (file.size > 250 * 1024 * 1024) {
-            post({ type: 'ERROR', message: 'Dieser Browser unterstützt keine großen PST-Dateien. Bitte Chrome oder Edge verwenden.' })
-            return
-          }
-          post({ type: 'PROGRESS', message: 'Datei wird gelesen...', phase: 'copy' })
-          const arrayBuffer = await file.arrayBuffer()
-          if (loadOpId !== myOpId) return // aborted
+          // No OPFS (e.g. file:// URL) — lazy random-access via FileReaderSync
           post({ type: 'PROGRESS', message: 'PST wird verarbeitet...', phase: 'parse' })
-          const tree = initPSTLegacy(new Uint8Array(arrayBuffer), file.name)
+          const tree = initPSTFromFile(file)
+          if (loadOpId !== myOpId) return
           post({ type: 'READY', tree, fileName: file.name, fileSize: file.size, savedAt: 0 })
           return
         }
@@ -671,33 +783,47 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         const reader = file.stream().getReader()
         let offset = 0
         const totalSize = file.size
-        let lastReportedMB = -1
+        let lastProgressTime = 0
 
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          if (loadOpId !== myOpId) {
-            // Aborted by a newer load
-            await closeSyncHandle()
-            return
+        try {
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (loadOpId !== myOpId) {
+              // Aborted by a newer load
+              reader.cancel().catch(() => {})
+              await closeSyncHandle()
+              return
+            }
+            syncHandle.write(value, { at: offset })
+            offset += value.byteLength
+            const now = performance.now()
+            if (now - lastProgressTime >= 2000) {
+              lastProgressTime = now
+              const percent = Math.round(offset / totalSize * 100)
+              post({
+                type: 'PROGRESS',
+                message: `Datei wird in lokalen Cache kopiert... (${formatBytes(offset)} / ${formatBytes(totalSize)})`,
+                percent,
+                phase: 'copy',
+              })
+              // Yield to macrotask queue so ABORT_LOAD messages can be processed
+              await yieldToMessageLoop()
+              if (loadOpId !== myOpId) {
+                reader.cancel().catch(() => {})
+                await closeSyncHandle()
+                return
+              }
+            }
           }
-          syncHandle.write(value, { at: offset })
-          offset += value.byteLength
-          // Report progress every ~1MB
-          const currentMB = Math.floor(offset / (1024 * 1024))
-          if (currentMB !== lastReportedMB) {
-            lastReportedMB = currentMB
-            const percent = Math.round(offset / totalSize * 100)
-            post({
-              type: 'PROGRESS',
-              message: `Datei wird in lokalen Cache kopiert... (${formatBytes(offset)} / ${formatBytes(totalSize)})`,
-              percent,
-              phase: 'copy',
-            })
-          }
+
+          syncHandle.flush()
+        } catch (err) {
+          reader.cancel().catch(() => {})
+          await closeSyncHandle()
+          post({ type: 'ERROR', message: `Fehler beim Kopieren der Datei: ${err instanceof Error ? err.message : String(err)}` })
+          return
         }
-
-        syncHandle.flush()
 
         if (loadOpId !== myOpId) {
           await closeSyncHandle()
@@ -733,7 +859,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         // Load metadata from IDB
         const meta = await loadMetadataFromIDB()
         if (!meta) {
-          // No cached data — not an error
+          // No cached data — signal "no cache" (empty message = not a user-visible error)
           post({ type: 'ERROR', message: '' })
           return
         }
@@ -741,7 +867,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         // Probe OPFS availability
         if (!(await probeOpfs())) {
-          // Can't use OPFS cache without OPFS support
+          // Can't use OPFS cache without OPFS support (e.g. file:// URL)
           post({ type: 'ERROR', message: '' })
           return
         }
@@ -791,6 +917,13 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           resetState()
           post({ type: 'ERROR', message: '' })
         }
+        break
+      }
+
+      case 'ABORT_LOAD': {
+        ++loadOpId // cancel any in-flight LOAD_FILE/LOAD_CACHED
+        resetState()
+        post({ type: 'ERROR', message: '' }) // silent reset
         break
       }
 
@@ -846,7 +979,13 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
               email = folder.getNextChild()
               idx++
             }
-          } catch { /* no emails */ }
+          } catch (err) {
+            if (emails.length === 0) {
+              post({ type: 'ERROR', message: `Fehler beim Lesen des Ordners: ${err instanceof Error ? err.message : String(err)}` })
+              return
+            }
+            // Partial read — continue with what we have
+          }
 
           emailCache.set(cmd.path, emails)
           completedFolders.add(cmd.path)
@@ -894,7 +1033,13 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           if (emails.length > pageStart) {
             post({ type: 'FOLDER_EMAILS', path: cmd.path, emails: emails.slice(pageStart), searchableFolderCount: emailCache.size, totalCount, page })
           }
-        } catch { /* no emails */ }
+        } catch (err) {
+          if (emails.length === 0) {
+            post({ type: 'ERROR', message: `Fehler beim Lesen des Ordners: ${err instanceof Error ? err.message : String(err)}` })
+            return
+          }
+          // Partial read — continue with what we have
+        }
 
         // Only mark complete + send DONE if not cancelled
         if (folderLoadOpId !== myFolderOpId) return
@@ -926,6 +1071,69 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           }
         } catch (err: unknown) {
           post({ type: 'ERROR', message: `Fehler beim Laden: ${err instanceof Error ? err.message : String(err)}` })
+        }
+        break
+      }
+
+      case 'FETCH_ATTACHMENT': {
+        const folder = folderCache.get(cmd.folderPath)
+        if (!folder) {
+          post({ type: 'ERROR', message: `Ordner nicht gefunden: ${cmd.folderPath}` })
+          return
+        }
+
+        try {
+          folder.moveChildCursorTo(cmd.index)
+          const msg = folder.getNextChild()
+          if (!msg) {
+            post({ type: 'ERROR', message: 'E-Mail nicht gefunden' })
+            return
+          }
+
+          const att = msg.getAttachment(cmd.attachmentIndex)
+          if (!att) {
+            post({ type: 'ERROR', message: 'Anhang nicht gefunden' })
+            return
+          }
+
+          const size = att.attachSize
+          const buf = Buffer.alloc(size)
+          const stream = att.fileInputStream
+          if (stream) {
+            stream.readCompletely(buf)
+          }
+          const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
+          const fileName = att.displayName || att.filename || `attachment_${cmd.attachmentIndex}`
+          const mimeType = att.mimeTag || 'application/octet-stream'
+          post({ type: 'ATTACHMENT_DATA', fileName, mimeType, data: ab }, [ab])
+        } catch (err: unknown) {
+          post({ type: 'ERROR', message: `Fehler beim Laden des Anhangs: ${err instanceof Error ? err.message : String(err)}` })
+        }
+        break
+      }
+
+      case 'BUILD_EML': {
+        const folder = folderCache.get(cmd.folderPath)
+        if (!folder) {
+          post({ type: 'ERROR', message: `Ordner nicht gefunden: ${cmd.folderPath}` })
+          return
+        }
+
+        try {
+          folder.moveChildCursorTo(cmd.index)
+          const msg = folder.getNextChild()
+          if (!msg) {
+            post({ type: 'ERROR', message: 'E-Mail nicht gefunden' })
+            return
+          }
+
+          const emlData = buildEml(msg, { includeHTML: true, includeTXT: true, includeAttachments: true })
+          const subject = sanitizeFileName(msg.subject || 'Kein Betreff').slice(0, 80)
+          const fileName = `${subject}.eml`
+          const ab = emlData.buffer.slice(emlData.byteOffset, emlData.byteOffset + emlData.byteLength) as ArrayBuffer
+          post({ type: 'EML_READY', data: ab, fileName }, [ab])
+        } catch (err: unknown) {
+          post({ type: 'ERROR', message: `Fehler beim Erstellen der EML: ${err instanceof Error ? err.message : String(err)}` })
         }
         break
       }
@@ -1020,11 +1228,14 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         await yieldToMessageLoop()
         if (loadOpId !== myOpId) return
 
-        const zipData = zipSync(files)
-        const zipBuffer = zipData.buffer.slice(zipData.byteOffset, zipData.byteOffset + zipData.byteLength) as ArrayBuffer
-
-        const exportFileName = `PST-Export_${new Date().toISOString().slice(0, 10)}.zip`
-        post({ type: 'EXPORT_READY', zipBuffer, fileName: exportFileName })
+        try {
+          const zipData = zipSync(files)
+          const zipBuffer = zipData.buffer.slice(zipData.byteOffset, zipData.byteOffset + zipData.byteLength) as ArrayBuffer
+          const exportFileName = `PST-Export_${new Date().toISOString().slice(0, 10)}.zip`
+          post({ type: 'EXPORT_READY', zipBuffer, fileName: exportFileName })
+        } catch (err) {
+          post({ type: 'ERROR', message: `ZIP-Erstellung fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}` })
+        }
         break
       }
 
@@ -1082,7 +1293,13 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
             msg = folder.getNextChild()
           }
-        } catch { /* folder iteration error */ }
+        } catch (err) {
+          if (Object.keys(files).length === 0) {
+            post({ type: 'ERROR', message: `Fehler beim Lesen des Ordners: ${err instanceof Error ? err.message : String(err)}` })
+            return
+          }
+          // Partial read — export what we have
+        }
 
         if (loadOpId !== myOpId) return
 
@@ -1090,13 +1307,15 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         await yieldToMessageLoop()
         if (loadOpId !== myOpId) return
 
-        const zipData = zipSync(files)
-        const zipBuffer = zipData.buffer.slice(zipData.byteOffset, zipData.byteOffset + zipData.byteLength) as ArrayBuffer
-
-        // Use folder name for zip filename
-        const folderName = sanitizeFileName(folderPath.split(' / ').pop() || 'Ordner')
-        const exportFileName = `${folderName}_${new Date().toISOString().slice(0, 10)}.zip`
-        post({ type: 'EXPORT_READY', zipBuffer, fileName: exportFileName })
+        try {
+          const zipData = zipSync(files)
+          const zipBuffer = zipData.buffer.slice(zipData.byteOffset, zipData.byteOffset + zipData.byteLength) as ArrayBuffer
+          const folderName = sanitizeFileName(folderPath.split(' / ').pop() || 'Ordner')
+          const exportFileName = `${folderName}_${new Date().toISOString().slice(0, 10)}.zip`
+          post({ type: 'EXPORT_READY', zipBuffer, fileName: exportFileName })
+        } catch (err) {
+          post({ type: 'ERROR', message: `ZIP-Erstellung fehlgeschlagen: ${err instanceof Error ? err.message : String(err)}` })
+        }
         break
       }
     }
