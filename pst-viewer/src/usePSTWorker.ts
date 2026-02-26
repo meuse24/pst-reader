@@ -21,13 +21,14 @@ export interface PSTWorkerState {
   folderTotalCounts: Map<string, number>
   folderLoadingPaths: Set<string>
   exporting: boolean
+  indexProgress: { indexed: number; total: number } | null
 }
 
 export interface PSTWorkerActions {
   loadFile: (file: File) => void
   fetchFolder: (path: string) => void
   fetchBody: (folderPath: string, index: number) => void
-  search: (query: string, folderPath: string) => void
+  search: (query: string, folderPath: string, includeBody?: boolean) => void
   abortSearch: () => void
   closeFile: () => void
   clearError: () => void
@@ -68,6 +69,8 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
   const [folderTotalCounts, setFolderTotalCounts] = useState<Map<string, number>>(new Map())
   const [folderLoadingPaths, setFolderLoadingPaths] = useState<Set<string>>(new Set())
   const [exporting, setExporting] = useState(false)
+  const [indexProgress, setIndexProgress] = useState<{ indexed: number; total: number } | null>(null)
+  const indexDoneTimerRef = useRef(0) // version counter to cancel stale done-timers
   // Use worker-reported searchable count (reflects LRU eviction), not local map size
   const indexedFolderCount = searchableFolderCount
 
@@ -109,6 +112,10 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           activeSearchRequestIdRef.current = null
           setSearching(false)
           setSearchProgress(null)
+          setIndexProgress(null)
+          ++indexDoneTimerRef.current // invalidate any pending done-timer
+          // Auto-start background indexing of all folders
+          worker.postMessage({ type: 'INDEX_ALL' } satisfies WorkerCommand)
           break
 
         case 'FOLDER_EMAILS':
@@ -242,7 +249,23 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           setLoadingMsg('')
           setProgress(0)
           setLoadingPhase(null)
+          setIndexProgress(null)
+          ++indexDoneTimerRef.current
           break
+
+        case 'INDEX_PROGRESS': {
+          const version = ++indexDoneTimerRef.current
+          if (msg.done) {
+            // Show "done" state briefly, then hide (version-guarded to avoid stale clear)
+            setIndexProgress({ indexed: msg.indexed, total: msg.totalFolders })
+            setTimeout(() => {
+              if (indexDoneTimerRef.current === version) setIndexProgress(null)
+            }, 3000)
+          } else {
+            setIndexProgress({ indexed: msg.indexed, total: msg.totalFolders })
+          }
+          break
+        }
 
         case 'CACHE_DELETED':
           setTree(null)
@@ -262,6 +285,8 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           activeSearchRequestIdRef.current = null
           setSearching(false)
           setSearchProgress(null)
+          setIndexProgress(null)
+          ++indexDoneTimerRef.current
           break
       }
     }
@@ -290,6 +315,8 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     activeSearchRequestIdRef.current = null
     setSearching(false)
     setSearchProgress(null)
+    setIndexProgress(null)
+    ++indexDoneTimerRef.current
     send({ type: 'LOAD_FILE', file })
   }, [send])
 
@@ -303,7 +330,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     send({ type: 'FETCH_BODY', folderPath, index })
   }, [send])
 
-  const search = useCallback((query: string, folderPath: string) => {
+  const search = useCallback((query: string, folderPath: string, includeBody?: boolean) => {
     const trimmed = query.trim()
     if (!trimmed || !folderPath) {
       send({ type: 'ABORT_SEARCH' })
@@ -327,7 +354,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     })
     setSearchResults([])
     setFolderLoadingPaths(new Set())
-    send({ type: 'SEARCH', query, folderPath, requestId })
+    send({ type: 'SEARCH', query, folderPath, requestId, includeBody })
   }, [send])
 
   const abortSearch = useCallback(() => {
@@ -377,6 +404,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     indexedFolderCount,
     folderTotalCounts, folderLoadingPaths,
     exporting,
+    indexProgress,
     loadFile, fetchFolder, fetchBody, search, abortSearch, closeFile, clearError, exportEmails, exportFolder, fetchAttachment, shareEmail, abortLoad,
   }
 }

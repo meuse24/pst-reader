@@ -62,13 +62,14 @@ export type WorkerCommand =
   | { type: 'DELETE_CACHE' }
   | { type: 'FETCH_FOLDER'; path: string }
   | { type: 'FETCH_BODY'; folderPath: string; index: number }
-  | { type: 'SEARCH'; query: string; folderPath: string; requestId: number }
+  | { type: 'SEARCH'; query: string; folderPath: string; requestId: number; includeBody?: boolean }
   | { type: 'ABORT_SEARCH' }
   | { type: 'EXPORT_EMAILS'; emails: Array<{ folderPath: string; index: number }>; options: ExportOptions }
   | { type: 'FETCH_ATTACHMENT'; folderPath: string; index: number; attachmentIndex: number }
   | { type: 'EXPORT_FOLDER'; folderPath: string; options: ExportOptions }
   | { type: 'BUILD_EML'; folderPath: string; index: number }
   | { type: 'ABORT_LOAD' }
+  | { type: 'INDEX_ALL' }
 
 // ─── Worker responses (worker → main) ────────────────────────────────────────
 
@@ -84,4 +85,5 @@ export type WorkerResponse =
   | { type: 'EXPORT_READY'; zipBuffer: ArrayBuffer; fileName: string }
   | { type: 'ATTACHMENT_DATA'; fileName: string; mimeType: string; data: ArrayBuffer }
   | { type: 'EML_READY'; data: ArrayBuffer; fileName: string }
+  | { type: 'INDEX_PROGRESS'; indexed: number; totalFolders: number; done?: boolean }
   | { type: 'CACHE_DELETED' }

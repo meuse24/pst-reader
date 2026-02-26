@@ -332,12 +332,18 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
             <h2 className="text-base font-semibold text-gray-800 mb-1">Suche</h2>
             <p className="text-sm text-gray-600">
               Mit <b>Strg+F</b> oder Klick auf das Suchfeld k&ouml;nnen Sie nach E-Mails suchen.
-              Die Suche arbeitet im aktuell ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger, Anh&auml;nge und den Nachrichtentext.
+              Die Suche arbeitet im aktuell ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger und Anh&auml;nge. Optional kann auch der Nachrichtentext durchsucht werden (&bdquo;Auch Inhalt durchsuchen&ldquo;).
               Mehrere Suchbegriffe werden mit UND verkn&uuml;pft. Die Suche ist nicht Gross-/Kleinschreibung-sensitiv.
               Bei grossen Ordnern werden Treffer und Fortschritt schrittweise angezeigt; die Suche kann jederzeit abgebrochen werden.
               Treffer k&ouml;nnen bereits w&auml;hrend der laufenden Suche ge&ouml;ffnet und gelesen werden.
               Bestimmte Detail-Aktionen (z.B. Teilen/Anhang laden) sind bis zum Ende der Suche kurzzeitig gesperrt.
               Mit <b>Escape</b> wird die Suche geschlossen.
+            </p>
+            <p className="text-sm text-gray-600 mt-2">
+              <b>Hintergrund-Indizierung:</b> Nach dem &Ouml;ffnen einer PST-Datei werden alle Ordner automatisch im Hintergrund indiziert.
+              Der Fortschritt wird in der Titelleiste angezeigt.
+              Sobald die Indizierung abgeschlossen ist, sind Header-Suchen (ohne Inhalt) in allen Ordnern quasi-instant — auch in bisher nicht besuchten.
+              Die Indizierung pausiert automatisch, wenn Sie Ordner wechseln oder suchen.
             </p>
           </section>
 
@@ -467,10 +473,11 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
           <section className="mb-5">
             <h2 className="text-base font-semibold text-gray-800 mb-2">Suchmodus</h2>
             <p className="text-sm text-gray-600">
-              Die Volltextsuche l&auml;uft im jeweils ausgew&auml;hlten Ordner und ber&uuml;cksichtigt auch den Nachrichtentext.
+              Die Suche l&auml;uft im jeweils ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger und Anh&auml;nge. Mit der Option &bdquo;Auch Inhalt durchsuchen&ldquo; wird zus&auml;tzlich der Nachrichtentext einbezogen.
               Treffer werden bei grossen Ordnern schrittweise geliefert, inklusive Fortschrittsanzeige und Abbrechen-Funktion.
               Treffer lassen sich bereits waehrend der Suche oeffnen.
               Teilen und Anhang-Download bleiben waehrenddessen kurzzeitig deaktiviert.
+              Alle Ordner werden nach dem &Ouml;ffnen automatisch im Hintergrund indiziert — Header-Suchen sind danach in jedem Ordner sofort verf&uuml;gbar.
             </p>
           </section>
 
@@ -534,6 +541,7 @@ function MenuBar({
   sidebarVisible,
   onToggleSidebar,
   loading,
+  indexProgress,
 }: {
   fileName: string
   fileSize: number
@@ -545,6 +553,7 @@ function MenuBar({
   sidebarVisible: boolean
   onToggleSidebar: () => void
   loading: boolean
+  indexProgress: { indexed: number; total: number } | null
 }) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -645,6 +654,16 @@ function MenuBar({
       {fileName && (
         <span className="text-xs text-gray-400 truncate">
           {fileName} ({formatFileSize(fileSize)})
+          {indexProgress && indexProgress.indexed < indexProgress.total && (
+            <span className="ml-2 text-gray-500">
+              &middot; Indizierung: {indexProgress.indexed} / {indexProgress.total} Ordner
+            </span>
+          )}
+          {indexProgress && indexProgress.indexed >= indexProgress.total && (
+            <span className="ml-2 text-green-400">
+              &middot; &#10003; {indexProgress.total} Ordner indiziert
+            </span>
+          )}
         </span>
       )}
 
@@ -672,6 +691,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('')
   const searchQueryRef = useRef(searchQuery)
   searchQueryRef.current = searchQuery
+  const [searchIncludeBody, setSearchIncludeBody] = useState(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const loadingRef = useRef(pst.loading)
@@ -732,9 +752,9 @@ function App() {
       abortSearch()
       return
     }
-    pst.search(debouncedQuery, selectedFolderPath)
+    pst.search(debouncedQuery, selectedFolderPath, searchIncludeBody)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedQuery, selectedFolderPath])
+  }, [debouncedQuery, selectedFolderPath, searchIncludeBody])
 
   // Get emails for current view
   const folderEmailList = selectedFolderPath ? pst.folderEmails.get(selectedFolderPath) : undefined
@@ -869,6 +889,7 @@ function App() {
           sidebarVisible={sidebarVisible}
           onToggleSidebar={() => setSidebarVisible(v => !v)}
           loading={pst.loading}
+          indexProgress={pst.indexProgress}
         />
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center p-12 border-2 border-dashed border-gray-300 rounded-xl max-w-lg w-full mx-4 bg-white">
@@ -965,6 +986,7 @@ function App() {
         sidebarVisible={sidebarVisible}
         onToggleSidebar={() => setSidebarVisible(v => !v)}
         loading={pst.loading}
+        indexProgress={pst.indexProgress}
       />
 
       {pst.error && (
@@ -1006,7 +1028,7 @@ function App() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={selectedFolder ? `Suche in "${selectedFolder.name}" inkl. Inhalt (Strg+F)` : 'Ordner auswählen, dann suchen (Strg+F)'}
+                placeholder={selectedFolder ? `Suche in "${selectedFolder.name}" (Strg+F)` : 'Ordner auswählen, dann suchen (Strg+F)'}
                 className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent bg-gray-50"
               />
               {searchQuery && (
@@ -1018,6 +1040,15 @@ function App() {
                 </button>
               )}
             </div>
+            <label className="flex items-center gap-1.5 mt-1.5 text-xs text-gray-500 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={searchIncludeBody}
+                onChange={(e) => setSearchIncludeBody(e.target.checked)}
+                className="rounded border-gray-300 text-blue-500 focus:ring-blue-400 h-3.5 w-3.5"
+              />
+              Auch Inhalt durchsuchen
+            </label>
           </div>
 
           {/* Header */}

@@ -60,13 +60,14 @@ const PAGE_SIZE = 200
 const PAGINATION_THRESHOLD = 500
 const SEARCH_RESULT_PAGE_SIZE = 200
 const SEARCH_PROGRESS_INTERVAL = 300
-const SEARCH_YIELD_INTERVAL = 50
+const SEARCH_YIELD_INTERVAL = 200
 
 const folderCache = new Map<string, PSTFolder>()
 const emailCache = new Map<string, EmailMeta[]>()
 const completedFolders = new Set<string>()
 let folderLoadOpId = 0
 let searchOpId = 0
+let indexOpId = 0
 
 // Store original readSync so we can restore it for legacy mode
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -255,8 +256,14 @@ function buildFolderTree(folder: PSTFolder, parentPath = ''): FolderNode {
   folderCache.set(path, folder)
 
   try {
-    for (const sub of folder.getSubFolders()) {
-      children.push(buildFolderTree(sub, path))
+    const origError = console.error
+    console.error = () => {}
+    try {
+      for (const sub of folder.getSubFolders()) {
+        children.push(buildFolderTree(sub, path))
+      }
+    } finally {
+      console.error = origError
     }
   } catch { /* no subfolders */ }
 
@@ -289,16 +296,15 @@ function buildBodySnippet(body: string, terms: string[], radius = 80): string {
 }
 
 function detectMatchField(email: EmailMeta, terms: string[], bodyLower: string): string {
-  const subject = email.subject.toLowerCase()
-  const senderName = email.senderName.toLowerCase()
-  const senderEmail = email.senderEmail.toLowerCase()
-  const recipients = (email.displayTo + '\0' + email.displayCC).toLowerCase()
-  const attachments = email.attachmentNames.map(n => n.toLowerCase())
+  // _searchText is already lowercased: subject\0senderName\0senderEmail\0displayTo\0displayCC\0...attachments
+  const parts = email._searchText.split('\0')
   for (const t of terms) {
-    if (subject.includes(t)) return 'Betreff'
-    if (senderName.includes(t) || senderEmail.includes(t)) return 'Absender'
-    if (recipients.includes(t)) return 'Empfänger'
-    if (attachments.some(name => name.includes(t))) return 'Anhang'
+    if (parts[0].includes(t)) return 'Betreff'
+    if (parts[1].includes(t) || parts[2].includes(t)) return 'Absender'
+    if (parts[3].includes(t) || parts[4].includes(t)) return 'Empfänger'
+    for (let i = 5; i < parts.length; i++) {
+      if (parts[i].includes(t)) return 'Anhang'
+    }
     if (bodyLower.includes(t)) return 'Inhalt'
   }
   return 'Inhalt'
@@ -365,6 +371,7 @@ function resetState() {
   completedFolders.clear()
   ++folderLoadOpId
   ++searchOpId
+  ++indexOpId
 }
 
 function initPSTLegacy(uint8: Uint8Array, fileName: string): FolderNode {
@@ -782,6 +789,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         // Probe OPFS availability (APIs exist on file:// but fail at runtime)
         const opfsOk = await probeOpfs()
+        if (loadOpId !== myOpId) return
 
         if (!opfsOk) {
           // No OPFS (e.g. file:// URL) — lazy random-access via FileReaderSync
@@ -794,6 +802,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         // Check storage capacity
         const capacity = await checkStorageCapacity(file.size)
+        if (loadOpId !== myOpId) return
         if (!capacity.ok) {
           post({
             type: 'ERROR',
@@ -804,16 +813,30 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         // Request persistent storage
         try { await navigator.storage.persist() } catch { /* non-critical */ }
+        if (loadOpId !== myOpId) return
 
         // Stream file to OPFS
         post({ type: 'PROGRESS', message: 'Datei wird in lokalen Cache kopiert...', percent: 0, phase: 'copy' })
         const fileHandle = await getOpfsHandle(true)
+        if (loadOpId !== myOpId) return
         if (!fileHandle) {
           post({ type: 'ERROR', message: 'OPFS-Dateizugriff fehlgeschlagen.' })
           return
         }
 
-        syncHandle = await fileHandle.createSyncAccessHandle()
+        await closeSyncHandle()
+        if (loadOpId !== myOpId) return
+        try {
+          syncHandle = await fileHandle.createSyncAccessHandle()
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (msg.includes('Access Handle')) {
+            post({ type: 'ERROR', message: 'Die PST-Datei ist bereits in einem anderen Tab oder Fenster geöffnet. Bitte schließen Sie den anderen Tab und versuchen Sie es erneut.' })
+          } else {
+            post({ type: 'ERROR', message: `OPFS-Dateizugriff fehlgeschlagen: ${msg}` })
+          }
+          return
+        }
         syncHandle.truncate(0)
 
         const reader = file.stream().getReader()
@@ -911,6 +934,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         // Try to open cached OPFS file
         const fileHandle = await getOpfsHandle(false)
+        if (loadOpId !== myOpId) return
         if (!fileHandle) {
           // OPFS file doesn't exist — cache invalid
           await clearMetadataFromIDB()
@@ -919,10 +943,17 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         }
 
         try {
+          await closeSyncHandle()
+          if (loadOpId !== myOpId) return
           syncHandle = await fileHandle.createSyncAccessHandle()
-        } catch {
-          await clearMetadataFromIDB()
-          post({ type: 'ERROR', message: '' })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (msg.includes('Access Handle')) {
+            post({ type: 'ERROR', message: 'Die PST-Datei ist bereits in einem anderen Tab oder Fenster geöffnet. Bitte schließen Sie den anderen Tab und versuchen Sie es erneut.' })
+          } else {
+            await clearMetadataFromIDB()
+            post({ type: 'ERROR', message: '' })
+          }
           return
         }
         if (loadOpId !== myOpId) {
@@ -958,6 +989,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
       case 'ABORT_LOAD': {
         ++loadOpId // cancel any in-flight LOAD_FILE/LOAD_CACHED
+        await closeSyncHandle()
         resetState()
         post({ type: 'ERROR', message: '' }) // silent reset
         break
@@ -965,6 +997,68 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
       case 'ABORT_SEARCH': {
         ++searchOpId
+        break
+      }
+
+      case 'INDEX_ALL': {
+        const myOpId = ++indexOpId
+        let indexed = 0
+        const paths = [...folderCache.keys()]
+        const totalFolders = paths.filter(p => (folderCache.get(p)?.contentCount ?? 0) > 0).length
+
+        for (const path of paths) {
+          if (indexOpId !== myOpId) break
+
+          const folder = folderCache.get(path)!
+          if (folder.contentCount === 0) continue
+          if (completedFolders.has(path)) { indexed++; continue }
+
+          try {
+            const emails: EmailMeta[] = []
+            folder.moveChildCursorTo(0)
+            let msg: PSTMessage | null = folder.getNextChild()
+            let idx = 0
+            let aborted = false
+
+            while (msg) {
+              try { emails.push(extractEmailMeta(msg, idx, path)) } catch { /* skip broken entry */ }
+              idx++
+
+              // Yield every ~200 mails for abort check + other commands
+              if (idx % 200 === 0) {
+                const savedSearchOpId = searchOpId
+                const savedFolderOpId = folderLoadOpId
+                await yieldToMessageLoop()
+                if (indexOpId !== myOpId) { aborted = true; break }
+                // Pause if user started a search or folder load — give them priority
+                if (searchOpId !== savedSearchOpId || folderLoadOpId !== savedFolderOpId) {
+                  // Wait a bit for the user operation to finish
+                  await new Promise(resolve => setTimeout(resolve, 200))
+                  if (indexOpId !== myOpId) { aborted = true; break }
+                }
+                // Re-sync cursor after yield (other commands may have moved it)
+                folder.moveChildCursorTo(idx)
+                msg = folder.getNextChild()
+                continue
+              }
+
+              msg = folder.getNextChild()
+            }
+
+            if (aborted || indexOpId !== myOpId) break
+
+            emailCache.set(path, emails)
+            completedFolders.add(path)
+          } catch {
+            // Skip broken folder — don't let it kill the entire indexing run
+          }
+          indexed++
+          post({ type: 'INDEX_PROGRESS', indexed, totalFolders })
+        }
+
+        if (indexOpId === myOpId) {
+          post({ type: 'INDEX_PROGRESS', indexed, totalFolders, done: true })
+        }
         break
       }
 
@@ -1137,12 +1231,18 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             return
           }
 
-          const size = att.attachSize
-          const buf = Buffer.alloc(size)
           const stream = att.fileInputStream
-          if (stream) {
-            stream.readCompletely(buf)
+          if (!stream) {
+            post({ type: 'ERROR', message: 'Anhang-Stream nicht verfügbar' })
+            return
           }
+          const size = att.filesize > 0 ? att.filesize : att.size
+          if (size <= 0) {
+            post({ type: 'ERROR', message: 'Anhang ist leer' })
+            return
+          }
+          const buf = Buffer.alloc(size)
+          stream.readCompletely(buf)
           const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer
           const fileName = att.displayName || att.filename || `attachment_${cmd.attachmentIndex}`
           const mimeType = att.mimeTag || 'application/octet-stream'
@@ -1181,8 +1281,6 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
       case 'SEARCH': {
         const mySearchOpId = ++searchOpId
-        // Cancel in-flight paginated folder loads to avoid cursor interference
-        ++folderLoadOpId
 
         const folder = folderCache.get(cmd.folderPath)
         if (!folder) {
@@ -1209,6 +1307,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         }
 
         const terms = trimmed.split(/\s+/).filter(Boolean)
+        const includeBody = cmd.includeBody === true
         const cachedEmails = emailCache.get(cmd.folderPath)
         let scanned = 0
         let matches = 0
@@ -1228,6 +1327,125 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             done: false,
           },
         })
+
+        // Fast path: header-only search over cached emails (no PST I/O needed)
+        if (!includeBody && cachedEmails && completedFolders.has(cmd.folderPath)) {
+          // Use cache length as total — may differ from folder.contentCount if
+          // some emails were skipped during extractEmailMeta (broken entries).
+          const cacheTotal = cachedEmails.length
+          try {
+            for (let i = 0; i < cachedEmails.length; i++) {
+              if (searchOpId !== mySearchOpId) {
+                post({
+                  type: 'SEARCH_PROGRESS',
+                  progress: {
+                    requestId: cmd.requestId,
+                    folderPath: cmd.folderPath,
+                    scanned,
+                    total: cacheTotal,
+                    matches,
+                    done: true,
+                    cancelled: true,
+                  },
+                })
+                return
+              }
+
+              const email = cachedEmails[i]
+              if (terms.every(t => email._searchText.includes(t))) {
+                const matchField = detectMatchField(email, terms, '')
+                page.push({ email, folderPath: email.folderPath, matchField })
+                matches++
+
+                if (page.length >= SEARCH_RESULT_PAGE_SIZE) {
+                  post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
+                  page = []
+                }
+              }
+
+              scanned++
+
+              const now = performance.now()
+              if (now - lastProgressAt >= SEARCH_PROGRESS_INTERVAL) {
+                lastProgressAt = now
+                post({
+                  type: 'SEARCH_PROGRESS',
+                  progress: {
+                    requestId: cmd.requestId,
+                    folderPath: cmd.folderPath,
+                    scanned,
+                    total: cacheTotal,
+                    matches,
+                    done: false,
+                  },
+                })
+              }
+
+              if (now - lastYieldAt >= SEARCH_YIELD_INTERVAL) {
+                lastYieldAt = now
+                await yieldToMessageLoop()
+                if (searchOpId !== mySearchOpId) {
+                  post({
+                    type: 'SEARCH_PROGRESS',
+                    progress: {
+                      requestId: cmd.requestId,
+                      folderPath: cmd.folderPath,
+                      scanned,
+                      total: cacheTotal,
+                      matches,
+                      done: true,
+                      cancelled: true,
+                    },
+                  })
+                  return
+                }
+              }
+            }
+          } catch (err) {
+            if (scanned === 0) {
+              post({ type: 'ERROR', message: `Fehler bei der Suche: ${err instanceof Error ? err.message : String(err)}` })
+              post({
+                type: 'SEARCH_PROGRESS',
+                progress: {
+                  requestId: cmd.requestId,
+                  folderPath: cmd.folderPath,
+                  scanned: 0,
+                  total: cacheTotal,
+                  matches: 0,
+                  done: true,
+                },
+              })
+              return
+            }
+          }
+
+          // Send remaining results + done
+          if (searchOpId === mySearchOpId) {
+            if (page.length > 0) {
+              post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
+            }
+            post({
+              type: 'SEARCH_PROGRESS',
+              progress: {
+                requestId: cmd.requestId,
+                folderPath: cmd.folderPath,
+                scanned,
+                total: cacheTotal,
+                matches,
+                done: true,
+              },
+            })
+          }
+          break
+        }
+
+        // Slow path: cursor-based search (body search or cache not available)
+        // Cancel in-flight paginated folder loads to avoid cursor interference
+        ++folderLoadOpId
+
+        // Collect emails for cache writeback (only when not already cached)
+        const collectForCache = !cachedEmails && !completedFolders.has(cmd.folderPath)
+        const collectedEmails: EmailMeta[] = collectForCache ? [] : []
 
         try {
           folder.moveChildCursorTo(0)
@@ -1253,6 +1471,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
             const cachedMeta = cachedEmails?.[idx]
             const email = cachedMeta ?? extractEmailMeta(msg, idx, cmd.folderPath)
+            if (collectForCache) collectedEmails.push(email)
             const metaSearchText = email._searchText
 
             let bodyLower = ''
@@ -1260,6 +1479,10 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             let allMatch = true
             for (const t of terms) {
               if (metaSearchText.includes(t)) continue
+              if (!includeBody) {
+                allMatch = false
+                break
+              }
               if (!bodyLower) {
                 try {
                   bodyRaw = msg.body || ''
@@ -1370,6 +1593,12 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             },
           })
           return
+        }
+
+        // Cache metadata from search pass if folder wasn't already cached
+        if (collectForCache && !completedFolders.has(cmd.folderPath) && collectedEmails.length === total) {
+          emailCache.set(cmd.folderPath, collectedEmails)
+          completedFolders.add(cmd.folderPath)
         }
 
         if (page.length > 0) {
