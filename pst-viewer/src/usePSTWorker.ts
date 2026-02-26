@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import PSTWorkerConstructor from './pstWorker.ts?worker&inline'
-import type { FolderNode, EmailMeta, SearchResult, WorkerCommand, WorkerResponse, ExportOptions } from './types.ts'
+import type { FolderNode, EmailMeta, SearchResult, SearchProgress, WorkerCommand, WorkerResponse, ExportOptions } from './types.ts'
 
 export interface PSTWorkerState {
   tree: FolderNode | null
@@ -15,6 +15,8 @@ export interface PSTWorkerState {
   folderEmails: Map<string, EmailMeta[]>
   bodyCache: Map<string, { body: string; bodyHTML: string }>
   searchResults: SearchResult[] | null
+  searching: boolean
+  searchProgress: SearchProgress | null
   indexedFolderCount: number
   folderTotalCounts: Map<string, number>
   folderLoadingPaths: Set<string>
@@ -25,7 +27,8 @@ export interface PSTWorkerActions {
   loadFile: (file: File) => void
   fetchFolder: (path: string) => void
   fetchBody: (folderPath: string, index: number) => void
-  search: (query: string) => void
+  search: (query: string, folderPath: string) => void
+  abortSearch: () => void
   closeFile: () => void
   clearError: () => void
   exportEmails: (emails: Array<{ folderPath: string; index: number }>, options: ExportOptions) => void
@@ -44,6 +47,8 @@ function bodyKey(folderPath: string, index: number) {
 export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
   const workerRef = useRef<Worker | null>(null)
   const bodyCacheRef = useRef<Map<string, { body: string; bodyHTML: string }>>(new Map())
+  const searchRequestIdRef = useRef(0)
+  const activeSearchRequestIdRef = useRef<number | null>(null)
 
   const [tree, setTree] = useState<FolderNode | null>(null)
   const [fileName, setFileName] = useState('')
@@ -57,6 +62,8 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
   const [folderEmails, setFolderEmails] = useState<Map<string, EmailMeta[]>>(new Map())
   const [bodyCache, setBodyCache] = useState<Map<string, { body: string; bodyHTML: string }>>(new Map())
   const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchProgress, setSearchProgress] = useState<SearchProgress | null>(null)
   const [searchableFolderCount, setSearchableFolderCount] = useState(0)
   const [folderTotalCounts, setFolderTotalCounts] = useState<Map<string, number>>(new Map())
   const [folderLoadingPaths, setFolderLoadingPaths] = useState<Set<string>>(new Set())
@@ -95,9 +102,13 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           setFolderEmails(new Map())
           setBodyCache(new Map())
           bodyCacheRef.current = new Map()
+          setSearchResults(null)
           setSearchableFolderCount(0)
           setFolderTotalCounts(new Map())
           setFolderLoadingPaths(new Set())
+          activeSearchRequestIdRef.current = null
+          setSearching(false)
+          setSearchProgress(null)
           break
 
         case 'FOLDER_EMAILS':
@@ -155,7 +166,18 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           break
 
         case 'SEARCH_RESULTS':
-          setSearchResults(msg.results)
+          if (activeSearchRequestIdRef.current !== msg.requestId) break
+          setSearchResults(prev => {
+            if (!msg.append) return msg.results
+            const existing = prev ?? []
+            return existing.length === 0 ? msg.results : [...existing, ...msg.results]
+          })
+          break
+
+        case 'SEARCH_PROGRESS':
+          if (activeSearchRequestIdRef.current !== msg.progress.requestId) break
+          setSearchProgress(msg.progress)
+          setSearching(!msg.progress.done)
           break
 
         case 'ATTACHMENT_DATA': {
@@ -216,6 +238,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           if (msg.message) setError(msg.message)
           setLoading(false)
           setExporting(false)
+          setSearching(false)
           setLoadingMsg('')
           setProgress(0)
           setLoadingPhase(null)
@@ -236,6 +259,9 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
           setSearchableFolderCount(0)
           setFolderTotalCounts(new Map())
           setFolderLoadingPaths(new Set())
+          activeSearchRequestIdRef.current = null
+          setSearching(false)
+          setSearchProgress(null)
           break
       }
     }
@@ -261,6 +287,9 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     setLoadingPhase(null)
     setError(null)
     setSearchResults(null)
+    activeSearchRequestIdRef.current = null
+    setSearching(false)
+    setSearchProgress(null)
     send({ type: 'LOAD_FILE', file })
   }, [send])
 
@@ -274,8 +303,38 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     send({ type: 'FETCH_BODY', folderPath, index })
   }, [send])
 
-  const search = useCallback((query: string) => {
-    send({ type: 'SEARCH', query })
+  const search = useCallback((query: string, folderPath: string) => {
+    const trimmed = query.trim()
+    if (!trimmed || !folderPath) {
+      send({ type: 'ABORT_SEARCH' })
+      activeSearchRequestIdRef.current = null
+      setSearching(false)
+      setSearchProgress(null)
+      setSearchResults(null)
+      return
+    }
+
+    const requestId = ++searchRequestIdRef.current
+    activeSearchRequestIdRef.current = requestId
+    setSearching(true)
+    setSearchProgress({
+      requestId,
+      folderPath,
+      scanned: 0,
+      total: 0,
+      matches: 0,
+      done: false,
+    })
+    setSearchResults([])
+    setFolderLoadingPaths(new Set())
+    send({ type: 'SEARCH', query, folderPath, requestId })
+  }, [send])
+
+  const abortSearch = useCallback(() => {
+    send({ type: 'ABORT_SEARCH' })
+    activeSearchRequestIdRef.current = null
+    setSearching(false)
+    setSearchProgress(prev => prev ? { ...prev, done: true, cancelled: true } : null)
   }, [send])
 
   const closeFile = useCallback(() => {
@@ -314,10 +373,11 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
     tree, fileName, fileSize, savedAt,
     loading, loadingMsg, progress, loadingPhase, error,
     folderEmails, bodyCache, searchResults,
+    searching, searchProgress,
     indexedFolderCount,
     folderTotalCounts, folderLoadingPaths,
     exporting,
-    loadFile, fetchFolder, fetchBody, search, closeFile, clearError, exportEmails, exportFolder, fetchAttachment, shareEmail, abortLoad,
+    loadFile, fetchFolder, fetchBody, search, abortSearch, closeFile, clearError, exportEmails, exportFolder, fetchAttachment, shareEmail, abortLoad,
   }
 }
 

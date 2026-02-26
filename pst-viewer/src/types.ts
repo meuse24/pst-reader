@@ -36,6 +36,16 @@ export interface SearchResult {
   matchField: string
 }
 
+export interface SearchProgress {
+  requestId: number
+  folderPath: string
+  scanned: number
+  total: number
+  matches: number
+  done: boolean
+  cancelled?: boolean
+}
+
 /** Export options for EML/ZIP export */
 export interface ExportOptions {
   includeHTML: boolean
@@ -52,7 +62,8 @@ export type WorkerCommand =
   | { type: 'DELETE_CACHE' }
   | { type: 'FETCH_FOLDER'; path: string }
   | { type: 'FETCH_BODY'; folderPath: string; index: number }
-  | { type: 'SEARCH'; query: string }
+  | { type: 'SEARCH'; query: string; folderPath: string; requestId: number }
+  | { type: 'ABORT_SEARCH' }
   | { type: 'EXPORT_EMAILS'; emails: Array<{ folderPath: string; index: number }>; options: ExportOptions }
   | { type: 'FETCH_ATTACHMENT'; folderPath: string; index: number; attachmentIndex: number }
   | { type: 'EXPORT_FOLDER'; folderPath: string; options: ExportOptions }
@@ -66,7 +77,8 @@ export type WorkerResponse =
   | { type: 'FOLDER_EMAILS'; path: string; emails: EmailMeta[]; searchableFolderCount: number; totalCount: number; page: number }
   | { type: 'FOLDER_DONE'; path: string; totalCount: number }
   | { type: 'EMAIL_BODY'; folderPath: string; index: number; body: string; bodyHTML: string }
-  | { type: 'SEARCH_RESULTS'; results: SearchResult[] }
+  | { type: 'SEARCH_RESULTS'; requestId: number; results: SearchResult[]; append: boolean }
+  | { type: 'SEARCH_PROGRESS'; progress: SearchProgress }
   | { type: 'PROGRESS'; message: string; percent?: number; phase?: 'copy' | 'parse' }
   | { type: 'ERROR'; message: string }
   | { type: 'EXPORT_READY'; zipBuffer: ArrayBuffer; fileName: string }

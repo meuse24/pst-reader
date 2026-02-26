@@ -58,11 +58,15 @@ let loadOpId = 0 // operation counter for aborting stale loads
 const FIRST_PAGE_SIZE = 50
 const PAGE_SIZE = 200
 const PAGINATION_THRESHOLD = 500
+const SEARCH_RESULT_PAGE_SIZE = 200
+const SEARCH_PROGRESS_INTERVAL = 300
+const SEARCH_YIELD_INTERVAL = 50
 
 const folderCache = new Map<string, PSTFolder>()
 const emailCache = new Map<string, EmailMeta[]>()
 const completedFolders = new Set<string>()
 let folderLoadOpId = 0
+let searchOpId = 0
 
 // Store original readSync so we can restore it for legacy mode
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -269,6 +273,37 @@ function buildSearchText(subject: string, senderName: string, senderEmail: strin
   return [subject, senderName, senderEmail, displayTo, displayCC, ...attachmentNames].join('\0').toLowerCase()
 }
 
+function buildBodySnippet(body: string, terms: string[], radius = 80): string {
+  const compact = body.replace(/\s+/g, ' ').trim()
+  if (!compact) return ''
+  const lower = compact.toLowerCase()
+  let bestIdx = -1
+  for (const t of terms) {
+    const idx = lower.indexOf(t)
+    if (idx !== -1 && (bestIdx === -1 || idx < bestIdx)) bestIdx = idx
+  }
+  if (bestIdx === -1) return compact.slice(0, 200)
+  const start = Math.max(0, bestIdx - radius)
+  const end = Math.min(compact.length, bestIdx + radius)
+  return (start > 0 ? '...' : '') + compact.slice(start, end) + (end < compact.length ? '...' : '')
+}
+
+function detectMatchField(email: EmailMeta, terms: string[], bodyLower: string): string {
+  const subject = email.subject.toLowerCase()
+  const senderName = email.senderName.toLowerCase()
+  const senderEmail = email.senderEmail.toLowerCase()
+  const recipients = (email.displayTo + '\0' + email.displayCC).toLowerCase()
+  const attachments = email.attachmentNames.map(n => n.toLowerCase())
+  for (const t of terms) {
+    if (subject.includes(t)) return 'Betreff'
+    if (senderName.includes(t) || senderEmail.includes(t)) return 'Absender'
+    if (recipients.includes(t)) return 'Empfänger'
+    if (attachments.some(name => name.includes(t))) return 'Anhang'
+    if (bodyLower.includes(t)) return 'Inhalt'
+  }
+  return 'Inhalt'
+}
+
 function extractEmailMeta(email: PSTMessage, index: number, folderPath: string): EmailMeta {
   const attachmentNames: string[] = []
   for (let i = 0; i < email.numberOfAttachments; i++) {
@@ -329,6 +364,7 @@ function resetState() {
   emailCache.clear()
   completedFolders.clear()
   ++folderLoadOpId
+  ++searchOpId
 }
 
 function initPSTLegacy(uint8: Uint8Array, fileName: string): FolderNode {
@@ -927,6 +963,11 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         break
       }
 
+      case 'ABORT_SEARCH': {
+        ++searchOpId
+        break
+      }
+
       case 'DELETE_CACHE': {
         ++loadOpId // cancel any in-flight LOAD_FILE/LOAD_CACHED
         await closeSyncHandle()
@@ -1139,35 +1180,206 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       }
 
       case 'SEARCH': {
-        const trimmed = cmd.query.trim().toLowerCase()
-        if (!trimmed) {
-          post({ type: 'SEARCH_RESULTS', results: [] })
+        const mySearchOpId = ++searchOpId
+        // Cancel in-flight paginated folder loads to avoid cursor interference
+        ++folderLoadOpId
+
+        const folder = folderCache.get(cmd.folderPath)
+        if (!folder) {
+          post({ type: 'ERROR', message: `Ordner nicht gefunden: ${cmd.folderPath}` })
           return
         }
 
-        const terms = trimmed.split(/\s+/)
-        const results: SearchResult[] = []
-
-        // Search across all cached (visited) folders
-        for (const [, emails] of emailCache) {
-          for (const email of emails) {
-            let allMatch = true
-            for (const t of terms) {
-              if (!email._searchText.includes(t)) { allMatch = false; break }
-            }
-            if (allMatch) {
-              let matchField = 'Inhalt'
-              for (const t of terms) {
-                if (email.subject.toLowerCase().includes(t)) { matchField = 'Betreff'; break }
-                if (email.senderName.toLowerCase().includes(t) || email.senderEmail.toLowerCase().includes(t)) { matchField = 'Absender'; break }
-                if (email.displayTo.toLowerCase().includes(t)) { matchField = 'Empfänger'; break }
-              }
-              results.push({ email, folderPath: email.folderPath, matchField })
-            }
-          }
+        const trimmed = cmd.query.trim().toLowerCase()
+        const total = Math.max(0, folder.contentCount)
+        if (!trimmed) {
+          post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: [], append: false })
+          post({
+            type: 'SEARCH_PROGRESS',
+            progress: {
+              requestId: cmd.requestId,
+              folderPath: cmd.folderPath,
+              scanned: 0,
+              total,
+              matches: 0,
+              done: true,
+            },
+          })
+          return
         }
 
-        post({ type: 'SEARCH_RESULTS', results })
+        const terms = trimmed.split(/\s+/).filter(Boolean)
+        const cachedEmails = emailCache.get(cmd.folderPath)
+        let scanned = 0
+        let matches = 0
+        let page: SearchResult[] = []
+        let lastProgressAt = performance.now()
+        let lastYieldAt = performance.now()
+
+        post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: [], append: false })
+        post({
+          type: 'SEARCH_PROGRESS',
+          progress: {
+            requestId: cmd.requestId,
+            folderPath: cmd.folderPath,
+            scanned: 0,
+            total,
+            matches: 0,
+            done: false,
+          },
+        })
+
+        try {
+          folder.moveChildCursorTo(0)
+          let msg: PSTMessage | null = folder.getNextChild()
+          let idx = 0
+
+          while (msg != null) {
+            if (searchOpId !== mySearchOpId) {
+              post({
+                type: 'SEARCH_PROGRESS',
+                progress: {
+                  requestId: cmd.requestId,
+                  folderPath: cmd.folderPath,
+                  scanned,
+                  total,
+                  matches,
+                  done: true,
+                  cancelled: true,
+                },
+              })
+              return
+            }
+
+            const cachedMeta = cachedEmails?.[idx]
+            const email = cachedMeta ?? extractEmailMeta(msg, idx, cmd.folderPath)
+            const metaSearchText = email._searchText
+
+            let bodyLower = ''
+            let bodyRaw = ''
+            let allMatch = true
+            for (const t of terms) {
+              if (metaSearchText.includes(t)) continue
+              if (!bodyLower) {
+                try {
+                  bodyRaw = msg.body || ''
+                  bodyLower = bodyRaw.toLowerCase()
+                } catch {
+                  bodyRaw = ''
+                  bodyLower = ''
+                }
+              }
+              if (!bodyLower.includes(t)) {
+                allMatch = false
+                break
+              }
+            }
+
+            if (allMatch) {
+              const enrichedEmail = (!email.bodySnippet && bodyRaw)
+                ? { ...email, bodySnippet: buildBodySnippet(bodyRaw, terms) }
+                : email
+              const matchField = detectMatchField(enrichedEmail, terms, bodyLower)
+              page.push({ email: enrichedEmail, folderPath: enrichedEmail.folderPath, matchField })
+              matches++
+
+              if (page.length >= SEARCH_RESULT_PAGE_SIZE) {
+                post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
+                page = []
+              }
+            }
+
+            scanned++
+            idx++
+
+            const now = performance.now()
+            if (now - lastProgressAt >= SEARCH_PROGRESS_INTERVAL) {
+              lastProgressAt = now
+              post({
+                type: 'SEARCH_PROGRESS',
+                progress: {
+                  requestId: cmd.requestId,
+                  folderPath: cmd.folderPath,
+                  scanned,
+                  total,
+                  matches,
+                  done: false,
+                },
+              })
+            }
+
+            if (now - lastYieldAt >= SEARCH_YIELD_INTERVAL) {
+              lastYieldAt = now
+              await yieldToMessageLoop()
+              if (searchOpId !== mySearchOpId) {
+                post({
+                  type: 'SEARCH_PROGRESS',
+                  progress: {
+                    requestId: cmd.requestId,
+                    folderPath: cmd.folderPath,
+                    scanned,
+                    total,
+                    matches,
+                    done: true,
+                    cancelled: true,
+                  },
+                })
+                return
+              }
+            }
+
+            msg = folder.getNextChild()
+          }
+        } catch (err) {
+          if (scanned === 0) {
+            post({ type: 'ERROR', message: `Fehler bei der Suche: ${err instanceof Error ? err.message : String(err)}` })
+            post({
+              type: 'SEARCH_PROGRESS',
+              progress: {
+                requestId: cmd.requestId,
+                folderPath: cmd.folderPath,
+                scanned: 0,
+                total,
+                matches: 0,
+                done: true,
+              },
+            })
+            return
+          }
+          // Partial results are still useful
+        }
+
+        if (searchOpId !== mySearchOpId) {
+          post({
+            type: 'SEARCH_PROGRESS',
+            progress: {
+              requestId: cmd.requestId,
+              folderPath: cmd.folderPath,
+              scanned,
+              total,
+              matches,
+              done: true,
+              cancelled: true,
+            },
+          })
+          return
+        }
+
+        if (page.length > 0) {
+          post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
+        }
+
+        post({
+          type: 'SEARCH_PROGRESS',
+          progress: {
+            requestId: cmd.requestId,
+            folderPath: cmd.folderPath,
+            scanned,
+            total,
+            matches,
+            done: true,
+          },
+        })
         break
       }
 

@@ -54,6 +54,7 @@ interface VirtualEmailListProps {
   emails: EmailMeta[]
   searchResults: SearchResult[] | null
   isSearching: boolean
+  searching: boolean
   query: string
   selectedFolderPath: string
   selectedIndex: number | null
@@ -65,6 +66,7 @@ export function VirtualEmailList({
   emails,
   searchResults,
   isSearching,
+  searching,
   query,
   selectedFolderPath,
   selectedIndex,
@@ -83,6 +85,17 @@ export function VirtualEmailList({
 
   if (emails.length === 0) {
     if (isSearching) {
+      if (searching) {
+        return (
+          <div className="p-6 text-center text-gray-400">
+            <svg className="inline-block w-4 h-4 mr-2 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Suche l&auml;uft...
+          </div>
+        )
+      }
       return (
         <div className="p-6 text-center text-gray-400">
           <div className="text-2xl mb-2">&#128269;</div>

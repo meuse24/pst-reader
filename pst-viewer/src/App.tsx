@@ -332,8 +332,10 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
             <h2 className="text-base font-semibold text-gray-800 mb-1">Suche</h2>
             <p className="text-sm text-gray-600">
               Mit <b>Strg+F</b> oder Klick auf das Suchfeld k&ouml;nnen Sie nach E-Mails suchen.
-              Die Suche durchsucht Betreff, Absender, Empf&auml;nger und Anh&auml;nge aller bisher besuchten Ordner.
+              Die Suche arbeitet im aktuell ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger, Anh&auml;nge und den Nachrichtentext.
               Mehrere Suchbegriffe werden mit UND verkn&uuml;pft. Die Suche ist nicht Gross-/Kleinschreibung-sensitiv.
+              Bei grossen Ordnern werden Treffer und Fortschritt schrittweise angezeigt; die Suche kann jederzeit abgebrochen werden.
+              W&auml;hrend einer laufenden Suche sind Detail-Aktionen (z.B. Teilen/Anhang laden) kurzzeitig gesperrt.
               Mit <b>Escape</b> wird die Suche geschlossen.
             </p>
           </section>
@@ -458,6 +460,14 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
             </div>
             <p className="text-xs text-gray-500 mt-2">
               Einzelne HTML-Datei, kein Server, alle Daten lokal im Browser.
+            </p>
+          </section>
+
+          <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-2">Suchmodus</h2>
+            <p className="text-sm text-gray-600">
+              Die Volltextsuche l&auml;uft im jeweils ausgew&auml;hlten Ordner und ber&uuml;cksichtigt auch den Nachrichtentext.
+              Treffer werden bei grossen Ordnern schrittweise geliefert, inklusive Fortschrittsanzeige und Abbrechen-Funktion.
             </p>
           </section>
 
@@ -657,6 +667,8 @@ function App() {
   const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null)
   const [selectedEmail, setSelectedEmail] = useState<EmailMeta | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
+  const searchQueryRef = useRef(searchQuery)
+  searchQueryRef.current = searchQuery
   const searchInputRef = useRef<HTMLInputElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const loadingRef = useRef(pst.loading)
@@ -671,6 +683,7 @@ function App() {
 
   const debouncedQuery = useDebounce(searchQuery, 200)
   const isSearching = debouncedQuery.trim().length > 0
+  const abortSearch = pst.abortSearch
 
   // Find the selected folder node in the tree
   const selectedFolder = useMemo(() => {
@@ -712,11 +725,13 @@ function App() {
 
   // Trigger search when debounced query changes
   useEffect(() => {
-    if (debouncedQuery.trim()) {
-      pst.search(debouncedQuery)
+    if (!selectedFolderPath || !debouncedQuery.trim() || !searchQueryRef.current.trim()) {
+      abortSearch()
+      return
     }
+    pst.search(debouncedQuery, selectedFolderPath)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedQuery])
+  }, [debouncedQuery, selectedFolderPath])
 
   // Get emails for current view
   const folderEmailList = selectedFolderPath ? pst.folderEmails.get(selectedFolderPath) : undefined
@@ -736,7 +751,15 @@ function App() {
     ? pst.bodyCache.get(bodyKey(selectedEmail.folderPath, selectedEmail.index))
     : null
 
+  const searchTotal = (pst.searchProgress?.total && pst.searchProgress.total > 0)
+    ? pst.searchProgress.total
+    : (selectedFolder?.emailCount ?? 0)
+  const searchScanned = pst.searchProgress?.scanned ?? 0
+  const searchMatches = pst.searchProgress?.matches ?? pst.searchResults?.length ?? 0
+  const searchPercent = searchTotal > 0 ? Math.min(100, Math.round((searchScanned / searchTotal) * 100)) : 0
+
   const handleFolderSelect = useCallback((folder: FolderNode) => {
+    abortSearch()
     setSelectedFolderPath(folder.path)
     setSelectedEmail(null)
     setSearchQuery('')
@@ -750,6 +773,7 @@ function App() {
       alert('Bitte eine PST- oder OST-Datei auswählen.')
       return
     }
+    abortSearch()
     setSelectedEmail(null)
     setSelectedFolderPath(null)
     setSearchQuery('')
@@ -758,6 +782,7 @@ function App() {
   }, [])
 
   const handleClose = useCallback(() => {
+    abortSearch()
     setSelectedEmail(null)
     setSelectedFolderPath(null)
     setSearchQuery('')
@@ -776,8 +801,9 @@ function App() {
   )
 
   const handleEmailSelect = useCallback((email: EmailMeta) => {
+    if (pst.searching) return
     setSelectedEmail(email)
-  }, [])
+  }, [pst.searching])
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -792,6 +818,7 @@ function App() {
         if (!loadingRef.current) fileInputRef.current?.click()
       }
       if (e.key === 'Escape' && isSearching) {
+        abortSearch()
         setSearchQuery('')
         searchInputRef.current?.blur()
       }
@@ -806,7 +833,7 @@ function App() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isSearching])
+  }, [isSearching, abortSearch])
 
   const handleSearchExport = useCallback(() => {
     if (!pst.searchResults || pst.searchResults.length === 0) return
@@ -977,13 +1004,13 @@ function App() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={`Suche in ${pst.indexedFolderCount} Ordner(n) (Strg+F)`}
+                placeholder={selectedFolder ? `Suche in "${selectedFolder.name}" inkl. Inhalt (Strg+F)` : 'Ordner auswählen, dann suchen (Strg+F)'}
                 className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent bg-gray-50"
               />
               {searchQuery && (
                 <button
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  onClick={() => { setSearchQuery(''); searchInputRef.current?.focus() }}
+                  onClick={() => { pst.abortSearch(); setSearchQuery(''); searchInputRef.current?.focus() }}
                 >
                   &#10005;
                 </button>
@@ -994,23 +1021,55 @@ function App() {
           {/* Header */}
           <div className="px-3 py-2 border-b border-gray-100 bg-gray-50/50">
             {isSearching ? (
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-gray-800">{pst.searchResults?.length || 0} Treffer</span>
-                <span className="text-xs text-gray-400">
-                  in {pst.indexedFolderCount} besuchten Ordner(n)
-                </span>
-                {pst.searchResults && pst.searchResults.length > 0 && (
-                  <div className="ml-auto">
-                    <ExportDialog
-                      count={pst.searchResults.length}
-                      label="Treffer"
-                      options={exportOptions}
-                      onOptionsChange={setExportOptions}
-                      onExport={handleSearchExport}
-                      exporting={pst.exporting}
-                      loadingMsg={pst.loadingMsg}
-                      attachmentCount={pst.searchResults.filter(r => r.email.hasAttachments).length}
-                    />
+              <div className="min-w-0 w-full">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-gray-800">{searchMatches} Treffer</span>
+                  <span className="text-xs text-gray-400 truncate">
+                    in {selectedFolder?.name || 'aktuellem Ordner'}
+                  </span>
+                  {pst.searching && (
+                    <button
+                      className="ml-auto px-2 py-0.5 text-xs text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition"
+                      onClick={pst.abortSearch}
+                    >
+                      Suche abbrechen
+                    </button>
+                  )}
+                  {!pst.searching && pst.searchResults && pst.searchResults.length > 0 && (
+                    <div className="ml-auto">
+                      <ExportDialog
+                        count={pst.searchResults.length}
+                        label="Treffer"
+                        options={exportOptions}
+                        onOptionsChange={setExportOptions}
+                        onExport={handleSearchExport}
+                        exporting={pst.exporting}
+                        loadingMsg={pst.loadingMsg}
+                        attachmentCount={pst.searchResults.filter(r => r.email.hasAttachments).length}
+                      />
+                    </div>
+                  )}
+                </div>
+                {pst.searchProgress && (
+                  <div className="mt-1.5">
+                    <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                      <span>
+                        {pst.searching
+                          ? 'Suche läuft...'
+                          : pst.searchProgress.cancelled
+                            ? 'Suche abgebrochen'
+                            : 'Suche abgeschlossen'}
+                      </span>
+                      <span>
+                        {searchScanned.toLocaleString('de-DE')} / {searchTotal.toLocaleString('de-DE')} Nachrichten
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
+                      <div
+                        className="bg-blue-600 h-1.5 rounded-full transition-all duration-200"
+                        style={{ width: `${searchPercent}%` }}
+                      />
+                    </div>
                   </div>
                 )}
               </div>
@@ -1053,6 +1112,7 @@ function App() {
             emails={displayEmails}
             searchResults={isSearching ? pst.searchResults : null}
             isSearching={isSearching}
+            searching={pst.searching}
             query={debouncedQuery}
             selectedFolderPath={selectedFolderPath || ''}
             selectedIndex={selectedEmail?.index ?? null}
@@ -1075,7 +1135,8 @@ function App() {
                   <button
                     onClick={() => pst.shareEmail(selectedEmail.folderPath, selectedEmail.index)}
                     title="E-Mail teilen"
-                    className="shrink-0 p-1.5 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition"
+                    disabled={pst.searching}
+                    className="shrink-0 p-1.5 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-500"
                   >
                     <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M4 12v7a2 2 0 002 2h12a2 2 0 002-2v-7" />
@@ -1113,7 +1174,8 @@ function App() {
                   <div className="mt-2 flex flex-wrap gap-2">
                     {selectedEmail.attachmentNames.map((name, i) => (
                       <button key={i} onClick={() => pst.fetchAttachment(selectedEmail.folderPath, selectedEmail.index, i)}
-                        className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 rounded text-xs text-gray-600 hover:bg-blue-100 hover:text-blue-700 cursor-pointer transition">
+                        disabled={pst.searching}
+                        className="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 rounded text-xs text-gray-600 hover:bg-blue-100 hover:text-blue-700 cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-gray-100 disabled:hover:text-gray-600">
                         &#128206; {name}
                       </button>
                     ))}
