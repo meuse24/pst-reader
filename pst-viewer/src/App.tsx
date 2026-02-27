@@ -785,6 +785,7 @@ function App() {
   loadingRef.current = pst.loading
 
   const [exportOptions, setExportOptions] = useState<ExportOptions>({ includeHTML: true, includeTXT: true, includeAttachments: false })
+  const [showSplash, setShowSplash] = useState(true)
   const [showHelp, setShowHelp] = useState(false)
   const [showInfo, setShowInfo] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(256)
@@ -1521,6 +1522,31 @@ function App() {
 
       {showHelp && <HelpDialog onClose={() => setShowHelp(false)} />}
       {showInfo && <InfoDialog onClose={() => setShowInfo(false)} />}
+
+      {showSplash && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 cursor-pointer select-none"
+          onClick={() => setShowSplash(false)}
+          onKeyDown={() => setShowSplash(false)}
+          tabIndex={0}
+          ref={(el) => el?.focus()}
+        >
+          <div className="text-center animate-[fadeIn_0.6s_ease-out]">
+            <div className="text-sm md:text-base font-semibold tracking-[0.3em] uppercase text-blue-400/70 mb-3">
+              MEUSE24
+            </div>
+            <div className="text-6xl md:text-8xl font-black tracking-tight text-white mb-2 drop-shadow-lg">
+              PST <span className="text-blue-400">Titan</span>
+            </div>
+            <div className="text-lg md:text-xl text-blue-300/80 font-medium tracking-wide">
+              Schluckt 50 GB zum Fr&uuml;hst&uuml;ck
+            </div>
+            <div className="mt-8 text-sm text-slate-500 animate-pulse">
+              Klicken oder beliebige Taste dr&uuml;cken
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
