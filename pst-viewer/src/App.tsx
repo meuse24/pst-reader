@@ -329,10 +329,27 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
           </section>
 
           <section className="mb-5">
+            <h2 className="text-base font-semibold text-gray-800 mb-1">Termine, Aufgaben &amp; Kontakte</h2>
+            <p className="text-sm text-gray-600">
+              PST-Dateien k&ouml;nnen neben E-Mails auch <b>Kalendereintr&auml;ge</b>, <b>Aufgaben</b>, <b>Kontakte</b> und <b>Journal-Eintr&auml;ge</b> enthalten.
+              Diese werden automatisch erkannt und mit farbigen Badges in der Liste gekennzeichnet.
+              In der Kurzvorschau erscheinen typ-spezifische Informationen statt des Nachrichtentexts:
+              Uhrzeit und Ort bei Terminen, Status und Fortschritt bei Aufgaben, Firma und Telefonnummer bei Kontakten.
+            </p>
+            <p className="text-sm text-gray-600 mt-1">
+              Die Detail-Ansicht zeigt je nach Typ passende Felder:
+              Beginn/Ende, Dauer, Ort und Teilnehmer bei Terminen;
+              Status, Fortschritt, Besitzer und F&auml;lligkeitsdatum bei Aufgaben;
+              Name, Firma, Position, E-Mail, Telefon und Adresse bei Kontakten.
+            </p>
+          </section>
+
+          <section className="mb-5">
             <h2 className="text-base font-semibold text-gray-800 mb-1">Suche</h2>
             <p className="text-sm text-gray-600">
-              Mit <b>Strg+F</b> oder Klick auf das Suchfeld k&ouml;nnen Sie nach E-Mails suchen.
-              Die Suche arbeitet im aktuell ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger und Anh&auml;nge. Optional kann auch der Nachrichtentext durchsucht werden (&bdquo;Auch Inhalt durchsuchen&ldquo;).
+              Mit <b>Strg+F</b> oder Klick auf das Suchfeld k&ouml;nnen Sie nach E-Mails und anderen Elementen suchen.
+              Die Suche arbeitet im aktuell ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger, Anh&auml;nge sowie typ-spezifische Felder (Ort bei Terminen, Besitzer bei Aufgaben, Name/Firma/E-Mail bei Kontakten).
+              Optional kann auch der Nachrichtentext durchsucht werden (&bdquo;Auch Inhalt durchsuchen&ldquo;).
               Mehrere Suchbegriffe werden mit UND verkn&uuml;pft. Die Suche ist nicht Gross-/Kleinschreibung-sensitiv.
               Bei grossen Ordnern werden Treffer und Fortschritt schrittweise angezeigt; die Suche kann jederzeit abgebrochen werden.
               Treffer k&ouml;nnen bereits w&auml;hrend der laufenden Suche ge&ouml;ffnet und gelesen werden.
@@ -528,6 +545,76 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ─── Sort button ────────────────────────────────────────────────────────────
+
+const SORT_OPTIONS: Array<{ key: 'date' | 'subject' | 'senderName' | 'numberOfAttachments'; label: string; defaultDir: 'asc' | 'desc' }> = [
+  { key: 'date', label: 'Datum', defaultDir: 'desc' },
+  { key: 'subject', label: 'Betreff', defaultDir: 'asc' },
+  { key: 'senderName', label: 'Absender', defaultDir: 'asc' },
+  { key: 'numberOfAttachments', label: 'Anhänge', defaultDir: 'desc' },
+]
+
+function SortButton({
+  field, direction, onSort,
+}: {
+  field: 'date' | 'subject' | 'senderName' | 'numberOfAttachments'; direction: 'asc' | 'desc'
+  onSort: (field: 'date' | 'subject' | 'senderName' | 'numberOfAttachments', direction: 'asc' | 'desc') => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    const keyHandler = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false) } }
+    document.addEventListener('mousedown', handler)
+    document.addEventListener('keydown', keyHandler)
+    return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('keydown', keyHandler) }
+  }, [open])
+
+  const activeLabel = SORT_OPTIONS.find(o => o.key === field)?.label ?? field
+  const arrow = direction === 'asc' ? '\u2191' : '\u2193'
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded flex items-center gap-1 hover:bg-gray-50 transition"
+        onClick={() => setOpen(!open)}
+        title="Sortierung ändern"
+      >
+        {arrow} {activeLabel}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-50">
+          {SORT_OPTIONS.map(opt => {
+            const isActive = field === opt.key
+            return (
+              <button
+                key={opt.key}
+                className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 ${isActive ? 'text-blue-700 bg-blue-50' : 'text-gray-700 hover:bg-gray-50'}`}
+                onClick={() => {
+                  if (isActive) {
+                    onSort(opt.key, direction === 'asc' ? 'desc' : 'asc')
+                  } else {
+                    onSort(opt.key, opt.defaultDir)
+                  }
+                  setOpen(false)
+                }}
+              >
+                {isActive && <span className="text-blue-600">{arrow}</span>}
+                {!isActive && <span className="w-3" />}
+                {opt.label}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Menu dropdown ───────────────────────────────────────────────────────────
 
 function MenuBar({
@@ -703,6 +790,8 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState(256)
   const [listWidth, setListWidth] = useState(384)
   const [sidebarVisible, setSidebarVisible] = useState(true)
+  const [sortField, setSortField] = useState<'date' | 'subject' | 'senderName' | 'numberOfAttachments'>('date')
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
 
   const debouncedQuery = useDebounce(searchQuery, 200)
   const isSearching = debouncedQuery.trim().length > 0
@@ -758,9 +847,50 @@ function App() {
 
   // Get emails for current view
   const folderEmailList = selectedFolderPath ? pst.folderEmails.get(selectedFolderPath) : undefined
-  const displayEmails = isSearching
+  const displayEmails = useMemo(() => isSearching
     ? (pst.searchResults || []).map(r => r.email)
     : folderEmailList || []
+  , [isSearching, pst.searchResults, folderEmailList])
+
+  // Sort emails — skip during folder pagination to avoid hundreds of redundant sorts on large folders
+  const folderStillPaging = !isSearching && !!selectedFolderPath && pst.folderLoadingPaths.has(selectedFolderPath)
+  const sortedPairs = useMemo(() => {
+    if (folderStillPaging) return null
+    const pairs = displayEmails.map((email, i) => ({ email, origIndex: i }))
+    if (pairs.length <= 1) return pairs
+    const dir = sortDirection === 'asc' ? 1 : -1
+    return pairs.sort((a, b) => {
+      switch (sortField) {
+        case 'date': {
+          if (!a.email.date && !b.email.date) return 0
+          if (!a.email.date) return 1
+          if (!b.email.date) return -1
+          return a.email.date < b.email.date ? -dir : a.email.date > b.email.date ? dir : 0
+        }
+        case 'subject':
+          return dir * a.email.subject.localeCompare(b.email.subject, 'de')
+        case 'senderName': {
+          const sa = a.email.senderName || a.email.senderEmail
+          const sb = b.email.senderName || b.email.senderEmail
+          return dir * sa.localeCompare(sb, 'de')
+        }
+        case 'numberOfAttachments':
+          return dir * (a.email.numberOfAttachments - b.email.numberOfAttachments)
+      }
+    })
+  }, [displayEmails, sortField, sortDirection, folderStillPaging])
+
+  const sortedEmails = useMemo(() => sortedPairs ? sortedPairs.map(p => p.email) : displayEmails, [sortedPairs, displayEmails])
+  const sortedSearchResults = useMemo(() => {
+    if (!isSearching || !pst.searchResults) return pst.searchResults
+    if (!sortedPairs) return pst.searchResults
+    return sortedPairs.map(p => pst.searchResults![p.origIndex])
+  }, [isSearching, pst.searchResults, sortedPairs])
+
+  const handleSort = useCallback((field: 'date' | 'subject' | 'senderName' | 'numberOfAttachments', direction: 'asc' | 'desc') => {
+    setSortField(field)
+    setSortDirection(direction)
+  }, [])
 
   // Fetch body when email is selected
   useEffect(() => {
@@ -1060,16 +1190,17 @@ function App() {
                   <span className="text-xs text-gray-400 truncate">
                     in {selectedFolder?.name || 'aktuellem Ordner'}
                   </span>
-                  {pst.searching && (
-                    <button
-                      className="ml-auto px-2 py-0.5 text-xs text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition"
-                      onClick={pst.abortSearch}
-                    >
-                      Suche abbrechen
-                    </button>
-                  )}
-                  {!pst.searching && pst.searchResults && pst.searchResults.length > 0 && (
-                    <div className="ml-auto">
+                  <div className="ml-auto flex items-center gap-2">
+                    <SortButton field={sortField} direction={sortDirection} onSort={handleSort} />
+                    {pst.searching && (
+                      <button
+                        className="px-2 py-0.5 text-xs text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition"
+                        onClick={pst.abortSearch}
+                      >
+                        Suche abbrechen
+                      </button>
+                    )}
+                    {!pst.searching && pst.searchResults && pst.searchResults.length > 0 && (
                       <ExportDialog
                         count={pst.searchResults.length}
                         label="Treffer"
@@ -1080,8 +1211,8 @@ function App() {
                         loadingMsg={pst.loadingMsg}
                         attachmentCount={pst.searchResults.filter(r => r.email.hasAttachments).length}
                       />
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
                 {pst.searchProgress && (
                   <div className="mt-1.5">
@@ -1122,8 +1253,9 @@ function App() {
                     ) : ''}
                   </div>
                 </div>
-                {selectedFolderPath && folderEmailList && folderEmailList.length > 0 && !pst.folderLoadingPaths.has(selectedFolderPath) && (
-                  <div className="ml-auto flex-shrink-0">
+                <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+                  <SortButton field={sortField} direction={sortDirection} onSort={handleSort} />
+                  {selectedFolderPath && folderEmailList && folderEmailList.length > 0 && !pst.folderLoadingPaths.has(selectedFolderPath) && (
                     <ExportDialog
                       count={folderEmailList.length}
                       label="Nachrichten"
@@ -1134,16 +1266,16 @@ function App() {
                       loadingMsg={pst.loadingMsg}
                       attachmentCount={folderEmailList.filter(e => e.hasAttachments).length}
                     />
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             )}
           </div>
 
           {/* Email Rows — virtualized */}
           <VirtualEmailList
-            emails={displayEmails}
-            searchResults={isSearching ? pst.searchResults : null}
+            emails={sortedEmails}
+            searchResults={isSearching ? sortedSearchResults ?? null : null}
             isSearching={isSearching}
             searching={pst.searching}
             query={debouncedQuery}
@@ -1179,23 +1311,149 @@ function App() {
                   </button>
                 </div>
                 <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-                  <span className="text-gray-400">Von:</span>
-                  <span className="text-gray-700">
-                    {selectedEmail.senderName}
-                    {selectedEmail.senderEmail && (
-                      <span className="text-gray-400 ml-1">&lt;{selectedEmail.senderEmail}&gt;</span>
-                    )}
-                  </span>
-                  <span className="text-gray-400">An:</span>
-                  <span className="text-gray-700">{selectedEmail.displayTo}</span>
-                  {selectedEmail.displayCC && (
+                  {selectedEmail.itemType === 'contact' ? (
                     <>
-                      <span className="text-gray-400">CC:</span>
-                      <span className="text-gray-700">{selectedEmail.displayCC}</span>
+                      {selectedEmail.contactName && (
+                        <>
+                          <span className="text-gray-400">Name:</span>
+                          <span className="text-gray-700">{selectedEmail.contactName}</span>
+                        </>
+                      )}
+                      {selectedEmail.contactCompany && (
+                        <>
+                          <span className="text-gray-400">Firma:</span>
+                          <span className="text-gray-700">{selectedEmail.contactCompany}</span>
+                        </>
+                      )}
+                      {selectedEmail.contactTitle && (
+                        <>
+                          <span className="text-gray-400">Position:</span>
+                          <span className="text-gray-700">{selectedEmail.contactTitle}</span>
+                        </>
+                      )}
+                      {selectedEmail.contactEmail && (
+                        <>
+                          <span className="text-gray-400">E-Mail:</span>
+                          <span className="text-gray-700">{selectedEmail.contactEmail}</span>
+                        </>
+                      )}
+                      {selectedEmail.contactPhone && (
+                        <>
+                          <span className="text-gray-400">Telefon:</span>
+                          <span className="text-gray-700">{selectedEmail.contactPhone}</span>
+                        </>
+                      )}
+                      {selectedEmail.contactAddress && (
+                        <>
+                          <span className="text-gray-400">Adresse:</span>
+                          <span className="text-gray-700 whitespace-pre-line">{selectedEmail.contactAddress}</span>
+                        </>
+                      )}
+                    </>
+                  ) : selectedEmail.itemType === 'appointment' ? (
+                    <>
+                      {selectedEmail.startTime && (
+                        <>
+                          <span className="text-gray-400">Beginn:</span>
+                          <span className="text-gray-700">{formatDate(selectedEmail.startTime)}</span>
+                        </>
+                      )}
+                      {selectedEmail.endTime && (
+                        <>
+                          <span className="text-gray-400">Ende:</span>
+                          <span className="text-gray-700">{formatDate(selectedEmail.endTime)}</span>
+                        </>
+                      )}
+                      {!!selectedEmail.duration && (
+                        <>
+                          <span className="text-gray-400">Dauer:</span>
+                          <span className="text-gray-700">{selectedEmail.duration} Minuten</span>
+                        </>
+                      )}
+                      {selectedEmail.location && (
+                        <>
+                          <span className="text-gray-400">Ort:</span>
+                          <span className="text-gray-700">{selectedEmail.location}</span>
+                        </>
+                      )}
+                      {selectedEmail.attendees && (
+                        <>
+                          <span className="text-gray-400">Teilnehmer:</span>
+                          <span className="text-gray-700">{selectedEmail.attendees}</span>
+                        </>
+                      )}
+                      {selectedEmail.senderName && (
+                        <>
+                          <span className="text-gray-400">Organisator:</span>
+                          <span className="text-gray-700">{selectedEmail.senderName}</span>
+                        </>
+                      )}
+                      {selectedEmail.isRecurring && (
+                        <>
+                          <span className="text-gray-400">Wiederholung:</span>
+                          <span className="text-gray-700">{selectedEmail.recurrencePattern || 'Ja'}</span>
+                        </>
+                      )}
+                      {selectedEmail.displayTo && (
+                        <>
+                          <span className="text-gray-400">An:</span>
+                          <span className="text-gray-700">{selectedEmail.displayTo}</span>
+                        </>
+                      )}
+                    </>
+                  ) : selectedEmail.itemType === 'task' ? (
+                    <>
+                      <span className="text-gray-400">Status:</span>
+                      <span className="text-gray-700">
+                        {['Nicht begonnen', 'In Bearbeitung', 'Erledigt', 'Wartend', 'Zurückgestellt'][selectedEmail.taskStatus ?? 0] ?? 'Unbekannt'}
+                        {selectedEmail.percentComplete != null && ` (${selectedEmail.percentComplete}%)`}
+                      </span>
+                      {selectedEmail.taskOwner && (
+                        <>
+                          <span className="text-gray-400">Besitzer:</span>
+                          <span className="text-gray-700">{selectedEmail.taskOwner}</span>
+                        </>
+                      )}
+                      {selectedEmail.date && (
+                        <>
+                          <span className="text-gray-400">F&auml;llig:</span>
+                          <span className="text-gray-700">{formatDate(selectedEmail.date)}</span>
+                        </>
+                      )}
+                      {selectedEmail.senderName && (
+                        <>
+                          <span className="text-gray-400">Von:</span>
+                          <span className="text-gray-700">{selectedEmail.senderName}</span>
+                        </>
+                      )}
+                      {selectedEmail.displayTo && (
+                        <>
+                          <span className="text-gray-400">An:</span>
+                          <span className="text-gray-700">{selectedEmail.displayTo}</span>
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-gray-400">Von:</span>
+                      <span className="text-gray-700">
+                        {selectedEmail.senderName}
+                        {selectedEmail.senderEmail && (
+                          <span className="text-gray-400 ml-1">&lt;{selectedEmail.senderEmail}&gt;</span>
+                        )}
+                      </span>
+                      <span className="text-gray-400">An:</span>
+                      <span className="text-gray-700">{selectedEmail.displayTo}</span>
+                      {selectedEmail.displayCC && (
+                        <>
+                          <span className="text-gray-400">CC:</span>
+                          <span className="text-gray-700">{selectedEmail.displayCC}</span>
+                        </>
+                      )}
+                      <span className="text-gray-400">Datum:</span>
+                      <span className="text-gray-700">{formatDate(selectedEmail.date)}</span>
                     </>
                   )}
-                  <span className="text-gray-400">Datum:</span>
-                  <span className="text-gray-700">{formatDate(selectedEmail.date)}</span>
                   {isSearching && (
                     <>
                       <span className="text-gray-400">Ordner:</span>

@@ -40,7 +40,8 @@ Alle schwere Arbeit laeuft im Worker-Thread:
 - **Paginiertes Ordner-Laden**: Ordner mit 500+ Mails werden seitenweise geladen (erste Seite 50, danach 200 Mails/Seite). Monotoner `folderLoadOpId`-Counter pro Request + `yieldToMessageLoop()` ermoeglichen Race-freien Abbruch bei Ordnerwechsel (auch A→B→A). Cache-Hits werden ebenfalls paginiert zurueckgesendet (kein 50k-Structured-Clone-Spike). Kleine Ordner (<500) laden weiterhin alles auf einmal.
 - **Lazy Body Loading**: `moveChildCursorTo(index)` + `getNextChild()` laedt Body nur fuer ausgewaehlte Mail
 - **IndexedDB**: Komplett im Worker (Load/Save/Delete)
-- **Suche**: Volltextsuche im ausgewaehlten Ordner (Betreff, Absender, Empfaenger, Anhaenge und Body). Ergebnisse werden paginiert/chunked geliefert, mit Fortschritt und Abbruch (`ABORT_SEARCH`) auch fuer sehr grosse Ordner. Treffer koennen bereits waehrend der laufenden Suche geoeffnet werden; der Suchcursor wird nach jedem Yield index-basiert re-synchronisiert. `SEARCH_YIELD_INTERVAL` = 200ms (reduziert Context-Switches, da Cursor-Re-Sync teuer ist). `detectMatchField()` nutzt vorberechneten `_searchText` (kein redundantes `toLowerCase()`). Slow-Path schreibt extrahierte Metadaten in `emailCache` zurueck (Cache-Writeback).
+- **Item-Typ-Erkennung**: `messageClass`-basierte Erkennung von Terminen (`IPM.Appointment`/`IPM.Schedule.Meeting`), Aufgaben (`IPM.Task`), Kontakten (`IPM.Contact`/`IPM.DistList`) und Journal-Eintraegen (`IPM.Activity`). Typ-spezifische Metadaten werden aus `PSTAppointment`/`PSTTask`/`PSTContact` extrahiert (Direktimport wie PSTUtil). `EmailMeta.itemType` ist optional (undefined = email, spart Structured-Clone-Bytes). Extra-Suchfelder (location, taskOwner, contactName/company/email) werden an `_searchText` angehaengt; `detectMatchField()` unterscheidet Attachment- von Extra-Parts via `attachmentNames.length` und liefert typ-spezifische Labels (Ort/Besitzer/Kontaktdaten).
+- **Suche**: Volltextsuche im ausgewaehlten Ordner (Betreff, Absender, Empfaenger, Anhaenge, typ-spezifische Felder und Body). Ergebnisse werden paginiert/chunked geliefert, mit Fortschritt und Abbruch (`ABORT_SEARCH`) auch fuer sehr grosse Ordner. Treffer koennen bereits waehrend der laufenden Suche geoeffnet werden; der Suchcursor wird nach jedem Yield index-basiert re-synchronisiert. `SEARCH_YIELD_INTERVAL` = 200ms (reduziert Context-Switches, da Cursor-Re-Sync teuer ist). `detectMatchField()` nutzt vorberechneten `_searchText` (kein redundantes `toLowerCase()`). Slow-Path schreibt extrahierte Metadaten in `emailCache` zurueck (Cache-Writeback).
 - **Hintergrund-Indizierung**: `INDEX_ALL` Command iteriert nach `READY` automatisch alle Ordner aus `folderCache`, laedt Metadaten in `emailCache`. Yield alle ~200 Mails, pausiert bei User-Interaktion (`searchOpId`/`folderLoadOpId`-Change), bricht bei neuer Datei sauber ab (`indexOpId`). Fehlerhafte Ordner werden uebersprungen (try/catch pro Ordner). Fortschritt via `INDEX_PROGRESS` in der Titelleiste ("Indizierung: X / Y Ordner").
 - **EML-Export**: Suchergebnisse oder ganze Ordner als EML-Dateien in ZIP exportieren. RFC-konformer EML-Builder:
   - RFC 2047 Encoded-Word Splitting (max 75 Zeichen pro Wort, UTF-8-Zeichengrenzen)
@@ -70,7 +71,7 @@ Typisierte Messages:
 ### Virtualisierung (`VirtualEmailList.tsx`)
 - `@tanstack/react-virtual` mit `useVirtualizer`
 - ~15 DOM-Nodes + 5 Overscan, unabhaengig von Email-Anzahl
-- Enthaelt auch `HighlightText`, `ImportanceBadge`, `formatDate`, `getSnippet`
+- Enthaelt auch `HighlightText`, `ImportanceBadge`, `formatDate`, `getSnippet`, `getItemSnippet` (typ-spezifische Kurzinfo), Item-Type-Badges
 
 ## Build
 
@@ -110,7 +111,8 @@ Die Build-Ausgabe wird auch nach `pst-viewer.html` im Projekt-Root kopiert.
 - **Paginiertes Ordner-Laden**: Ordner mit 500+ Mails laden seitenweise (erste Seite 50, danach 200/Seite), erste Seite sofort sichtbar, Rest streamt im Hintergrund nach. Ordnerwechsel bricht laufendes Laden Race-frei ab (`folderLoadOpId`-Counter statt Pfad-Vergleich). Cache-Hits ebenfalls paginiert. Header zeigt "X / Y Nachrichten" waehrend Laden.
 - Lazy Body Loading (Body erst bei Auswahl)
 - IndexedDB komplett im Worker
-- Volltextsuche im ausgewaehlten Ordner (inkl. Body) mit Fortschrittsanzeige, chunked Ergebnislieferung und Abbrechen; Treffer koennen bereits waehrend der Suche geoeffnet werden. Slow-Path Metadaten-Cache-Writeback.
+- **Item-Typ-Erkennung**: Termine, Aufgaben, Kontakte und Journal-Eintraege werden via `messageClass` erkannt. Farbige Badges in der Liste, typ-spezifische Snippets (Uhrzeit/Ort, Status/Fortschritt, Firma/Telefon) und angepasste Detail-Ansichten (Beginn/Ende/Teilnehmer, Status/Faellig/Besitzer, Name/Firma/E-Mail/Telefon/Adresse). Suche durchsucht auch typ-spezifische Felder mit korrekten Match-Labels.
+- Volltextsuche im ausgewaehlten Ordner (inkl. Body und typ-spezifische Felder) mit Fortschrittsanzeige, chunked Ergebnislieferung und Abbrechen; Treffer koennen bereits waehrend der Suche geoeffnet werden. Slow-Path Metadaten-Cache-Writeback.
 - **Hintergrund-Indizierung**: Alle Ordner werden nach dem Oeffnen automatisch indiziert (`INDEX_ALL`). Fortschritt in Titelleiste, fehlerhafte Ordner werden uebersprungen, User-Interaktion hat Vorrang.
 - Virtualisierte E-Mail-Liste
 - **EML-Export**: Suchergebnisse oder ganze Ordner als EML in ZIP exportieren (HTML/TXT/Attachments waehlbar, strikt RFC-konform, im Worker). Warnung bei grossen Exporten.

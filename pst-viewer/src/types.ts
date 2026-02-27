@@ -1,5 +1,7 @@
 // ─── Shared types for main thread ↔ worker communication ─────────────────────
 
+export type ItemType = 'email' | 'appointment' | 'task' | 'contact' | 'activity'
+
 /** Email metadata without body/bodyHTML — used in email list */
 export interface EmailMeta {
   index: number
@@ -18,6 +20,28 @@ export interface EmailMeta {
   attachmentNames: string[]
   bodySnippet: string
   _searchText: string
+  itemType?: ItemType  // undefined = email (backwards compatible)
+  // Appointment fields
+  location?: string
+  startTime?: string | null
+  endTime?: string | null
+  duration?: number
+  isAllDay?: boolean
+  isRecurring?: boolean
+  recurrencePattern?: string
+  attendees?: string
+  busyStatus?: number
+  // Task fields
+  taskStatus?: number  // 0=Nicht begonnen, 1=In Arbeit, 2=Erledigt, 3=Wartend, 4=Zurückgestellt
+  percentComplete?: number
+  taskOwner?: string
+  // Contact fields
+  contactName?: string
+  contactCompany?: string
+  contactTitle?: string
+  contactEmail?: string
+  contactPhone?: string
+  contactAddress?: string
 }
 
 /** Folder tree structure — no emails, just metadata */

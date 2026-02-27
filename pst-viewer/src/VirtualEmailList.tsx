@@ -36,6 +36,50 @@ function HighlightText({ text, query }: { text: string; query: string }) {
   )
 }
 
+function formatTime(iso: string | null): string {
+  if (!iso) return ''
+  try {
+    return new Date(iso).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })
+  } catch { return '' }
+}
+
+function getItemSnippet(email: EmailMeta): string {
+  const t = email.itemType
+  if (t === 'appointment') {
+    const parts: string[] = []
+    if (email.startTime && email.endTime && !email.isAllDay) {
+      parts.push(`${formatTime(email.startTime)} – ${formatTime(email.endTime)}`)
+    } else if (email.isAllDay) {
+      parts.push('Ganztägig')
+    }
+    if (email.location) parts.push(email.location)
+    if (email.duration && !email.isAllDay) parts.push(`${email.duration} Min.`)
+    if (email.isRecurring) parts.push('Serie')
+    return parts.join(' · ') || email.bodySnippet.slice(0, 100)
+  }
+  if (t === 'task') {
+    const statusLabels = ['Nicht begonnen', 'In Bearbeitung', 'Erledigt', 'Wartend', 'Zurückgestellt']
+    const label = statusLabels[email.taskStatus ?? 0] ?? 'Unbekannt'
+    const pct = email.percentComplete != null ? ` (${email.percentComplete}%)` : ''
+    return `${label}${pct}`
+  }
+  if (t === 'contact') {
+    const parts: string[] = []
+    if (email.contactCompany) parts.push(email.contactCompany)
+    if (email.contactPhone) parts.push(email.contactPhone)
+    if (email.contactEmail) parts.push(email.contactEmail)
+    return parts.join(' · ') || email.bodySnippet.slice(0, 100)
+  }
+  return email.bodySnippet.slice(0, 100)
+}
+
+const ITEM_TYPE_BADGE: Record<string, { emoji: string; label: string; cls: string }> = {
+  appointment: { emoji: '\uD83D\uDCC5', label: 'Termin', cls: 'text-blue-600 bg-blue-50' },
+  task: { emoji: '\u2611', label: 'Aufgabe', cls: 'text-green-600 bg-green-50' },
+  contact: { emoji: '\uD83D\uDC64', label: 'Kontakt', cls: 'text-purple-600 bg-purple-50' },
+  activity: { emoji: '\uD83D\uDCD3', label: 'Journal', cls: 'text-gray-600 bg-gray-50' },
+}
+
 function getSnippet(bodySnippet: string, query: string, radius = 60): string {
   const lower = bodySnippet.toLowerCase()
   const terms = query.trim().toLowerCase().split(/\s+/)
@@ -154,10 +198,14 @@ export function VirtualEmailList({
                 </div>
                 <div className="text-xs text-gray-400 truncate mt-0.5">
                   {isSearching
-                    ? <HighlightText text={getSnippet(email.bodySnippet, query)} query={query} />
-                    : email.bodySnippet.slice(0, 100)}
+                    ? <HighlightText text={email.itemType && email.itemType !== 'email' ? getItemSnippet(email) : getSnippet(email.bodySnippet, query)} query={query} />
+                    : getItemSnippet(email)}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">
+                  {email.itemType && ITEM_TYPE_BADGE[email.itemType] && (() => {
+                    const b = ITEM_TYPE_BADGE[email.itemType as string]
+                    return <span className={`text-xs px-1.5 rounded ${b.cls}`}>{b.emoji} {b.label}</span>
+                  })()}
                   {email.hasAttachments && (
                     <span className="text-xs text-gray-400">&#128206; {email.numberOfAttachments}</span>
                   )}

@@ -4,9 +4,13 @@ import { Buffer } from 'buffer'
 import { PSTFile, PSTFolder, PSTMessage } from 'pst-extractor'
 // PSTUtil is not exported from pst-extractor index, import directly
 import { PSTUtil } from 'pst-extractor/dist/PSTUtil.class'
+// Type-specific classes for appointment/task/contact extraction
+import { PSTAppointment } from 'pst-extractor/dist/PSTAppointment.class'
+import { PSTTask } from 'pst-extractor/dist/PSTTask.class'
+import { PSTContact } from 'pst-extractor/dist/PSTContact.class'
 
 import { zipSync } from 'fflate'
-import type { WorkerCommand, WorkerResponse, FolderNode, EmailMeta, SearchResult, ExportOptions } from './types.ts'
+import type { WorkerCommand, WorkerResponse, FolderNode, EmailMeta, SearchResult, ExportOptions, ItemType } from './types.ts'
 
 ;(globalThis as unknown as Record<string, unknown>).Buffer = Buffer
 
@@ -276,8 +280,8 @@ function buildFolderTree(folder: PSTFolder, parentPath = ''): FolderNode {
   }
 }
 
-function buildSearchText(subject: string, senderName: string, senderEmail: string, displayTo: string, displayCC: string, attachmentNames: string[]): string {
-  return [subject, senderName, senderEmail, displayTo, displayCC, ...attachmentNames].join('\0').toLowerCase()
+function buildSearchText(subject: string, senderName: string, senderEmail: string, displayTo: string, displayCC: string, attachmentNames: string[], extraParts: string[] = []): string {
+  return [subject, senderName, senderEmail, displayTo, displayCC, ...attachmentNames, ...extraParts].join('\0').toLowerCase()
 }
 
 function buildBodySnippet(body: string, terms: string[], radius = 80): string {
@@ -296,18 +300,38 @@ function buildBodySnippet(body: string, terms: string[], radius = 80): string {
 }
 
 function detectMatchField(email: EmailMeta, terms: string[], bodyLower: string): string {
-  // _searchText is already lowercased: subject\0senderName\0senderEmail\0displayTo\0displayCC\0...attachments
+  // _searchText layout: subject\0senderName\0senderEmail\0displayTo\0displayCC\0...attachments\0...extraParts
   const parts = email._searchText.split('\0')
+  const attEnd = 5 + email.attachmentNames.length  // first index after attachments
   for (const t of terms) {
     if (parts[0].includes(t)) return 'Betreff'
     if (parts[1].includes(t) || parts[2].includes(t)) return 'Absender'
     if (parts[3].includes(t) || parts[4].includes(t)) return 'Empfänger'
-    for (let i = 5; i < parts.length; i++) {
-      if (parts[i].includes(t)) return 'Anhang'
+    for (let i = 5; i < attEnd; i++) {
+      if (parts[i]?.includes(t)) return 'Anhang'
+    }
+    for (let i = attEnd; i < parts.length; i++) {
+      if (parts[i]?.includes(t)) {
+        // Type-specific match labels
+        const it = email.itemType
+        if (it === 'appointment') return 'Ort'
+        if (it === 'task') return 'Besitzer'
+        if (it === 'contact') return 'Kontaktdaten'
+        return 'Metadaten'
+      }
     }
     if (bodyLower.includes(t)) return 'Inhalt'
   }
   return 'Inhalt'
+}
+
+function detectItemType(messageClass: string): ItemType {
+  const mc = messageClass.toUpperCase()
+  if (mc.startsWith('IPM.APPOINTMENT') || mc.startsWith('IPM.SCHEDULE.MEETING')) return 'appointment'
+  if (mc.startsWith('IPM.TASK')) return 'task'
+  if (mc.startsWith('IPM.CONTACT') || mc.startsWith('IPM.DISTLIST')) return 'contact'
+  if (mc.startsWith('IPM.ACTIVITY')) return 'activity'
+  return 'email'
 }
 
 function extractEmailMeta(email: PSTMessage, index: number, folderPath: string): EmailMeta {
@@ -319,12 +343,19 @@ function extractEmailMeta(email: PSTMessage, index: number, folderPath: string):
     } catch { /* skip */ }
   }
 
-  const subject = email.subject || '(Kein Betreff)'
+  let subject = email.subject || '(Kein Betreff)'
   const senderName = email.senderName || ''
   const senderEmail = email.senderEmailAddress || ''
   const displayTo = email.displayTo || ''
   const displayCC = email.displayCC || ''
-  const date = email.clientSubmitTime || email.messageDeliveryTime || null
+  let date = email.clientSubmitTime || email.messageDeliveryTime || null
+
+  // Detect item type from messageClass
+  let itemType: ItemType = 'email'
+  try {
+    const mc = email.messageClass || ''
+    if (mc) itemType = detectItemType(mc)
+  } catch { /* skip */ }
 
   // In OPFS mode, skip body loading for snippets (expensive I/O per email)
   let bodySnippet = ''
@@ -335,7 +366,7 @@ function extractEmailMeta(email: PSTMessage, index: number, folderPath: string):
     } catch { /* skip */ }
   }
 
-  return {
+  const meta: EmailMeta = {
     index,
     folderPath,
     subject,
@@ -350,8 +381,68 @@ function extractEmailMeta(email: PSTMessage, index: number, folderPath: string):
     numberOfAttachments: email.numberOfAttachments,
     attachmentNames,
     bodySnippet,
-    _searchText: buildSearchText(subject, senderName, senderEmail, displayTo, displayCC, attachmentNames),
+    _searchText: '', // filled below
   }
+
+  // Only set itemType if not email (saves bytes in structured clone)
+  if (itemType !== 'email') meta.itemType = itemType
+
+  // Type-specific field extraction (all in try/catch for fault tolerance)
+  const extraSearchParts: string[] = []
+  try {
+    if (itemType === 'appointment') {
+      const appt = email as unknown as PSTAppointment
+      const loc = appt.location || ''
+      if (loc) { meta.location = loc; extraSearchParts.push(loc) }
+      const st = appt.startTime
+      const et = appt.endTime
+      meta.startTime = st ? st.toISOString() : null
+      meta.endTime = et ? et.toISOString() : null
+      if (st) date = st  // use startTime as primary date for sorting
+      meta.date = date ? date.toISOString() : null
+      meta.duration = appt.duration || 0
+      meta.isAllDay = appt.subType
+      meta.isRecurring = appt.isRecurring
+      if (appt.isRecurring) {
+        try { meta.recurrencePattern = appt.recurrencePattern || '' } catch { /* skip */ }
+      }
+      try { const att = appt.allAttendees; if (att) meta.attendees = att } catch { /* skip */ }
+      meta.busyStatus = appt.busyStatus
+    } else if (itemType === 'task') {
+      const task = email as unknown as PSTTask
+      meta.taskStatus = task.taskStatus
+      meta.percentComplete = Math.round((task.percentComplete || 0) * 100)
+      const owner = task.taskOwner || ''
+      if (owner) { meta.taskOwner = owner; extraSearchParts.push(owner) }
+      // Use taskDueDate (from PSTMessage) as primary date
+      const dueDate = email.taskDueDate
+      if (dueDate) meta.date = dueDate.toISOString()
+    } else if (itemType === 'contact') {
+      const contact = email as unknown as PSTContact
+      const givenName = contact.givenName || ''
+      const surname = contact.surname || ''
+      const contactName = [givenName, surname].filter(Boolean).join(' ')
+      if (contactName) { meta.contactName = contactName; extraSearchParts.push(contactName) }
+      if (!subject || subject === '(Kein Betreff)') {
+        subject = contactName || subject
+        meta.subject = subject
+      }
+      const company = contact.companyName || ''
+      if (company) { meta.contactCompany = company; extraSearchParts.push(company) }
+      const title = contact.title || ''
+      if (title) meta.contactTitle = title
+      const email1 = contact.email1EmailAddress || ''
+      if (email1) { meta.contactEmail = email1; extraSearchParts.push(email1) }
+      const phone = contact.mobileTelephoneNumber || contact.businessTelephoneNumber || contact.homeTelephoneNumber || ''
+      if (phone) meta.contactPhone = phone
+      const addr = contact.workAddress || contact.homeAddress || ''
+      if (addr) meta.contactAddress = addr
+    }
+  } catch { /* fault-tolerant: skip type-specific fields on error */ }
+
+  meta._searchText = buildSearchText(subject, senderName, senderEmail, displayTo, displayCC, attachmentNames, extraSearchParts)
+
+  return meta
 }
 
 function yieldToMessageLoop(): Promise<void> {
