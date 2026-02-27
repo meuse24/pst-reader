@@ -3,6 +3,7 @@ import type { ReactNode, ErrorInfo } from 'react'
 import { usePSTWorker, bodyKey } from './usePSTWorker.ts'
 import { VirtualEmailList } from './VirtualEmailList.tsx'
 import type { FolderNode, EmailMeta, ExportOptions } from './types.ts'
+import { t, tr, currentLocale } from './i18n.ts'
 
 // ─── Error Boundary ──────────────────────────────────────────────────────────
 
@@ -23,13 +24,13 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
         <div className="flex items-center justify-center min-h-screen bg-gray-50 p-8">
           <div className="text-center max-w-lg">
             <div className="text-5xl mb-4">&#9888;</div>
-            <h1 className="text-xl font-bold text-gray-800 mb-2">Ein unerwarteter Fehler ist aufgetreten</h1>
+            <h1 className="text-xl font-bold text-gray-800 mb-2">{t('errorTitle')}</h1>
             <p className="text-gray-500 mb-4 font-mono text-sm break-all">{this.state.error.message}</p>
             <button
               className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition"
               onClick={() => this.setState({ error: null })}
             >
-              Erneut versuchen
+              {t('errorRetry')}
             </button>
           </div>
         </div>
@@ -60,10 +61,16 @@ function useDebounce<T>(value: T, delay: number): T {
 function formatDate(iso: string | null): string {
   if (!iso) return ''
   try {
-    return new Date(iso).toLocaleDateString('de-DE', {
+    return new Date(iso).toLocaleDateString(currentLocale, {
       day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
     })
   } catch { return '' }
+}
+
+function getTaskStatusLabel(status: number | null | undefined): string {
+  return status != null && status >= 0 && status <= 4
+    ? t(`taskStatus${status}`)
+    : t('unknown')
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -74,6 +81,19 @@ const MIN_SIDEBAR = 180
 const MAX_SIDEBAR = 500
 const MIN_LIST = 280
 const MAX_LIST = 800
+
+// ─── BoldText — renders **bold** markers ──────────────────────────────────────
+
+function BoldText({ text }: { text: string }) {
+  const parts = text.split(/\*\*(.+?)\*\*/g)
+  return (
+    <>
+      {parts.map((part, i) =>
+        i % 2 === 1 ? <b key={i}>{part}</b> : <span key={i}>{part}</span>
+      )}
+    </>
+  )
+}
 
 // ─── ResizeHandle ────────────────────────────────────────────────────────────
 
@@ -182,7 +202,6 @@ function ExportDialog({
 
   useEffect(() => {
     if (!showDialog) return
-    setConfirmed(false)
     const handler = (e: MouseEvent) => {
       if (dialogRef.current && !dialogRef.current.contains(e.target as Node)) setShowDialog(false)
     }
@@ -194,7 +213,10 @@ function ExportDialog({
     <div className="relative" ref={dialogRef}>
       <button
         className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-        onClick={() => setShowDialog(!showDialog)}
+        onClick={() => {
+          if (!showDialog) setConfirmed(false)
+          setShowDialog(!showDialog)
+        }}
         disabled={exporting}
       >
         {exporting ? (
@@ -203,13 +225,13 @@ function ExportDialog({
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            {loadingMsg || 'Exportiert...'}
+            {loadingMsg || t('exporting')}
           </>
-        ) : 'Exportieren'}
+        ) : t('exportBtn')}
       </button>
       {showDialog && !exporting && (
         <div className="absolute right-0 top-full mt-1 w-72 bg-white rounded-lg shadow-xl border border-gray-200 p-3 z-50">
-          <div className="text-xs font-semibold text-gray-600 mb-2">Export-Optionen</div>
+          <div className="text-xs font-semibold text-gray-600 mb-2">{t('exportOptions')}</div>
           <label className="flex items-center gap-2 text-sm text-gray-700 mb-1.5 cursor-pointer">
             <input
               type="checkbox"
@@ -217,7 +239,7 @@ function ExportDialog({
               onChange={(e) => onOptionsChange({ ...options, includeHTML: e.target.checked })}
               className="rounded"
             />
-            HTML-Inhalt
+            {t('exportHTML')}
           </label>
           <label className="flex items-center gap-2 text-sm text-gray-700 mb-1.5 cursor-pointer">
             <input
@@ -226,7 +248,7 @@ function ExportDialog({
               onChange={(e) => onOptionsChange({ ...options, includeTXT: e.target.checked })}
               className="rounded"
             />
-            Textinhalt
+            {t('exportTXT')}
           </label>
           <label className="flex items-center gap-2 text-sm text-gray-700 mb-3 cursor-pointer">
             <input
@@ -235,22 +257,22 @@ function ExportDialog({
               onChange={(e) => onOptionsChange({ ...options, includeAttachments: e.target.checked })}
               className="rounded"
             />
-            Anh&auml;nge einschlie&szlig;en
+            {t('exportAttachments')}
           </label>
           {needsWarning && !confirmed && (
             <div className="mb-3 p-2 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800">
-              <div className="font-semibold mb-1">Grosser Export</div>
+              <div className="font-semibold mb-1">{t('exportWarningTitle')}</div>
               <p>
-                {count >= EXPORT_WARN_THRESHOLD && `${count.toLocaleString('de-DE')} E-Mails`}
-                {count >= EXPORT_WARN_THRESHOLD && options.includeAttachments && (attachmentCount ?? 0) >= EXPORT_WARN_ATTACHMENTS && ' mit '}
-                {options.includeAttachments && (attachmentCount ?? 0) >= EXPORT_WARN_ATTACHMENTS && `${(attachmentCount ?? 0).toLocaleString('de-DE')} Anh&auml;ngen`}
-                {' '}k&ouml;nnen viel Arbeitsspeicher beanspruchen und den Browser verlangsamen.
+                {count >= EXPORT_WARN_THRESHOLD && tr('exportWarningEmails', { count: count.toLocaleString(currentLocale) })}
+                {count >= EXPORT_WARN_THRESHOLD && options.includeAttachments && (attachmentCount ?? 0) >= EXPORT_WARN_ATTACHMENTS && ` ${t('exportWarningWith')} `}
+                {options.includeAttachments && (attachmentCount ?? 0) >= EXPORT_WARN_ATTACHMENTS && tr('exportWarningAttachments', { count: (attachmentCount ?? 0).toLocaleString(currentLocale) })}
+                {' '}{t('exportWarningBody')}
               </p>
               <button
                 className="mt-1.5 px-2 py-0.5 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 transition"
                 onClick={() => setConfirmed(true)}
               >
-                Trotzdem exportieren
+                {t('exportConfirm')}
               </button>
             </div>
           )}
@@ -259,10 +281,10 @@ function ExportDialog({
             onClick={() => { onExport(); setShowDialog(false) }}
             disabled={(!options.includeHTML && !options.includeTXT) || (needsWarning && !confirmed)}
           >
-            {count.toLocaleString('de-DE')} {label} als ZIP exportieren
+            {tr('exportZip', { count: count.toLocaleString(currentLocale), label })}
           </button>
           {!options.includeHTML && !options.includeTXT && (
-            <div className="text-xs text-red-500 mt-1">Mindestens ein Inhaltsformat w&auml;hlen</div>
+            <div className="text-xs text-red-500 mt-1">{t('exportMinFormat')}</div>
           )}
         </div>
       )}
@@ -283,6 +305,8 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
     return () => document.removeEventListener('keydown', handler)
   }, [onClose])
 
+  const ctrl = t('ctrlKey')
+
   return (
     <div
       ref={overlayRef}
@@ -298,124 +322,72 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
         </button>
 
         <div className="p-6">
-          <h1 className="text-xl font-bold text-gray-900 mb-6">PST Viewer — Hilfe</h1>
+          <h1 className="text-xl font-bold text-gray-900 mb-6">{t('helpTitle')}</h1>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">Erste Schritte</h2>
-            <p className="text-sm text-gray-600">
-              Outlook PST-Dateien k&ouml;nnen auf drei Wegen ge&ouml;ffnet werden:
-              per <b>Drag &amp; Drop</b> auf das Fenster, &uuml;ber das <b>Datei</b>-Men&uuml; oder mit dem Tastenkuerzel <b>Strg+O</b>.
-              Die Datei wird vollst&auml;ndig lokal im Browser verarbeitet.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpGettingStarted')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpGettingStartedText')} /></p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">Ordnerstruktur</h2>
-            <p className="text-sm text-gray-600">
-              Nach dem &Ouml;ffnen wird die Ordnerstruktur der PST-Datei links angezeigt.
-              Der erste Ordner mit E-Mails wird automatisch ausgew&auml;hlt.
-              Ordner k&ouml;nnen auf-/zugeklappt werden. Die Zahl neben dem Ordnernamen zeigt die Anzahl der enthaltenen E-Mails.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpFolders')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpFoldersText')} /></p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">E-Mails lesen</h2>
-            <p className="text-sm text-gray-600">
-              Klicken Sie auf einen Ordner, um dessen E-Mails zu laden. Bei grossen Ordnern (500+ Nachrichten) werden die E-Mails seitenweise geladen —
-              die ersten 50 erscheinen sofort, der Rest streamt im Hintergrund nach.
-              Klicken Sie auf eine E-Mail, um deren Inhalt anzuzeigen. HTML-E-Mails werden formatiert dargestellt, reine Text-E-Mails als Klartext.
-              Anh&auml;nge werden unter den E-Mail-Details aufgelistet.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpEmails')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpEmailsText')} /></p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">Termine, Aufgaben &amp; Kontakte</h2>
-            <p className="text-sm text-gray-600">
-              PST-Dateien k&ouml;nnen neben E-Mails auch <b>Kalendereintr&auml;ge</b>, <b>Aufgaben</b>, <b>Kontakte</b> und <b>Journal-Eintr&auml;ge</b> enthalten.
-              Diese werden automatisch erkannt und mit farbigen Badges in der Liste gekennzeichnet.
-              In der Kurzvorschau erscheinen typ-spezifische Informationen statt des Nachrichtentexts:
-              Uhrzeit und Ort bei Terminen, Status und Fortschritt bei Aufgaben, Firma und Telefonnummer bei Kontakten.
-            </p>
-            <p className="text-sm text-gray-600 mt-1">
-              Die Detail-Ansicht zeigt je nach Typ passende Felder:
-              Beginn/Ende, Dauer, Ort und Teilnehmer bei Terminen;
-              Status, Fortschritt, Besitzer und F&auml;lligkeitsdatum bei Aufgaben;
-              Name, Firma, Position, E-Mail, Telefon und Adresse bei Kontakten.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpCalendar')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpCalendarText1')} /></p>
+            <p className="text-sm text-gray-600 mt-1"><BoldText text={t('helpCalendarText2')} /></p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">Suche</h2>
-            <p className="text-sm text-gray-600">
-              Mit <b>Strg+F</b> oder Klick auf das Suchfeld k&ouml;nnen Sie nach E-Mails und anderen Elementen suchen.
-              Die Suche arbeitet im aktuell ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger, Anh&auml;nge sowie typ-spezifische Felder (Ort bei Terminen, Besitzer bei Aufgaben, Name/Firma/E-Mail bei Kontakten).
-              Optional kann auch der Nachrichtentext durchsucht werden (&bdquo;Auch Inhalt durchsuchen&ldquo;).
-              Mehrere Suchbegriffe werden mit UND verkn&uuml;pft. Die Suche ist nicht Gross-/Kleinschreibung-sensitiv.
-              Bei grossen Ordnern werden Treffer und Fortschritt schrittweise angezeigt; die Suche kann jederzeit abgebrochen werden.
-              Treffer k&ouml;nnen bereits w&auml;hrend der laufenden Suche ge&ouml;ffnet und gelesen werden.
-              Bestimmte Detail-Aktionen (z.B. Teilen/Anhang laden) sind bis zum Ende der Suche kurzzeitig gesperrt.
-              Mit <b>Escape</b> wird die Suche geschlossen.
-            </p>
-            <p className="text-sm text-gray-600 mt-2">
-              <b>Hintergrund-Indizierung:</b> Nach dem &Ouml;ffnen einer PST-Datei werden alle Ordner automatisch im Hintergrund indiziert.
-              Der Fortschritt wird in der Titelleiste angezeigt.
-              Sobald die Indizierung abgeschlossen ist, sind Header-Suchen (ohne Inhalt) in allen Ordnern quasi-instant — auch in bisher nicht besuchten.
-              Die Indizierung pausiert automatisch, wenn Sie Ordner wechseln oder suchen.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpSearch')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpSearchText1')} /></p>
+            <p className="text-sm text-gray-600 mt-2"><BoldText text={t('helpSearchText2')} /></p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">EML-Export</h2>
-            <p className="text-sm text-gray-600">
-              Suchergebnisse oder ganze Ordner k&ouml;nnen als ZIP-Archiv mit EML-Dateien exportiert werden.
-              Klicken Sie auf den <b>Exportieren</b>-Button im Such- oder Ordner-Header.
-              Im Export-Dialog k&ouml;nnen Sie w&auml;hlen, ob HTML-Inhalt, Textinhalt und/oder Anh&auml;nge eingeschlossen werden sollen.
-              Die EML-Dateien sind MIME-konform und k&ouml;nnen in jedem E-Mail-Programm ge&ouml;ffnet werden.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpExport')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpExportText')} /></p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">OPFS-Cache</h2>
-            <p className="text-sm text-gray-600">
-              Grosse PST-Dateien werden automatisch im lokalen OPFS-Cache (Origin Private File System) gespeichert.
-              Beim n&auml;chsten Besuch wird die Datei aus dem Cache geladen, ohne sie erneut ausw&auml;hlen zu m&uuml;ssen.
-              Der Cache kann &uuml;ber <b>Datei &rarr; PST schliessen &amp; Cache l&ouml;schen</b> gel&ouml;scht werden.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpCache')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpCacheText')} /></p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">Tastenkuerzel</h2>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpShortcuts')}</h2>
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-gray-500 border-b border-gray-200">
-                  <th className="pb-1 pr-4 font-medium">Taste</th>
-                  <th className="pb-1 font-medium">Funktion</th>
+                  <th className="pb-1 pr-4 font-medium">{t('helpShortcutKey')}</th>
+                  <th className="pb-1 font-medium">{t('helpShortcutFn')}</th>
                 </tr>
               </thead>
               <tbody className="text-gray-600">
-                <tr><td className="py-1 pr-4 font-mono text-xs">Strg+O</td><td>PST-Datei &ouml;ffnen</td></tr>
-                <tr><td className="py-1 pr-4 font-mono text-xs">Strg+F</td><td>Suche &ouml;ffnen</td></tr>
-                <tr><td className="py-1 pr-4 font-mono text-xs">Strg+B</td><td>Ordnerleiste ein-/ausblenden</td></tr>
-                <tr><td className="py-1 pr-4 font-mono text-xs">Escape</td><td>Suche schliessen / Hilfe schliessen</td></tr>
-                <tr><td className="py-1 pr-4 font-mono text-xs">F1</td><td>Hilfe anzeigen</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">{ctrl}+O</td><td>{t('helpShortcutOpenFile')}</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">{ctrl}+F</td><td>{t('helpShortcutSearch')}</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">{ctrl}+B</td><td>{t('helpShortcutSidebar')}</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">Escape</td><td>{t('helpShortcutEscape')}</td></tr>
+                <tr><td className="py-1 pr-4 font-mono text-xs">F1</td><td>{t('helpShortcutHelp')}</td></tr>
               </tbody>
             </table>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-1">Browser-Kompatibilit&auml;t</h2>
-            <p className="text-sm text-gray-600">
-              <b>Chrome</b> und <b>Edge</b> (ab Version 102) werden empfohlen — sie unterst&uuml;tzen OPFS f&uuml;r grosse Dateien (&gt;250 MB).
-              Firefox und Safari funktionieren f&uuml;r kleinere PST-Dateien.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpBrowserCompat')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpBrowserCompatText')} /></p>
           </section>
 
           <section>
-            <h2 className="text-base font-semibold text-gray-800 mb-1">Datenschutz</h2>
-            <p className="text-sm text-gray-600">
-              Alle Daten werden ausschliesslich lokal im Browser verarbeitet. Es werden keine Daten an einen Server &uuml;bertragen.
-              Die PST-Datei verlässt Ihren Computer nicht. Der OPFS-Cache ist nur f&uuml;r diese Webseite zugänglich.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpPrivacy')}</h2>
+            <p className="text-sm text-gray-600"><BoldText text={t('helpPrivacyText')} /></p>
           </section>
         </div>
       </div>
@@ -466,7 +438,7 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
           <div className="text-center mb-6">
             <div className="text-4xl mb-2">&#128231;</div>
             <h1 className="text-xl font-bold text-gray-900">PST Viewer</h1>
-            <p className="text-sm text-gray-500 mt-1">Browser-basierter Outlook PST-Datei-Viewer</p>
+            <p className="text-sm text-gray-500 mt-1">{t('infoSubtitle')}</p>
             <p className="text-xs text-gray-400 mt-2">&copy; {new Date().getFullYear()} MEUSE24</p>
             <div className="flex items-center justify-center gap-3 mt-2">
               <a href="https://meuse24.info" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">meuse24.info</a>
@@ -483,33 +455,25 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
               ))}
             </div>
             <p className="text-xs text-gray-500 mt-2">
-              Einzelne HTML-Datei, kein Server, alle Daten lokal im Browser.
+              {t('infoTechDesc')}
             </p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-2">Suchmodus</h2>
-            <p className="text-sm text-gray-600">
-              Die Suche l&auml;uft im jeweils ausgew&auml;hlten Ordner und durchsucht Betreff, Absender, Empf&auml;nger und Anh&auml;nge. Mit der Option &bdquo;Auch Inhalt durchsuchen&ldquo; wird zus&auml;tzlich der Nachrichtentext einbezogen.
-              Treffer werden bei grossen Ordnern schrittweise geliefert, inklusive Fortschrittsanzeige und Abbrechen-Funktion.
-              Treffer lassen sich bereits waehrend der Suche oeffnen.
-              Teilen und Anhang-Download bleiben waehrenddessen kurzzeitig deaktiviert.
-              Alle Ordner werden nach dem &Ouml;ffnen automatisch im Hintergrund indiziert — Header-Suchen sind danach in jedem Ordner sofort verf&uuml;gbar.
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-2">{t('infoSearchMode')}</h2>
+            <p className="text-sm text-gray-600">{t('infoSearchText')}</p>
           </section>
 
           <section className="mb-5">
-            <h2 className="text-base font-semibold text-gray-800 mb-2">Verwendete Bibliotheken</h2>
-            <p className="text-xs text-gray-500 mb-2">
-              Vielen Dank an die Autoren und Maintainer folgender Open-Source-Bibliotheken:
-            </p>
+            <h2 className="text-base font-semibold text-gray-800 mb-2">{t('infoLibraries')}</h2>
+            <p className="text-xs text-gray-500 mb-2">{t('infoLibrariesThanks')}</p>
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-gray-500 border-b border-gray-200">
-                  <th className="pb-1 pr-2 font-medium">Bibliothek</th>
-                  <th className="pb-1 pr-2 font-medium">Version</th>
-                  <th className="pb-1 pr-2 font-medium">Autor</th>
-                  <th className="pb-1 font-medium">Lizenz</th>
+                  <th className="pb-1 pr-2 font-medium">{t('infoLibrary')}</th>
+                  <th className="pb-1 pr-2 font-medium">{t('infoVersion')}</th>
+                  <th className="pb-1 pr-2 font-medium">{t('infoAuthor')}</th>
+                  <th className="pb-1 font-medium">{t('infoLicense')}</th>
                 </tr>
               </thead>
               <tbody className="text-gray-600">
@@ -530,13 +494,13 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
           </section>
 
           <section>
-            <h2 className="text-base font-semibold text-gray-800 mb-2">Entwicklungswerkzeuge</h2>
+            <h2 className="text-base font-semibold text-gray-800 mb-2">{t('infoDevTools')}</h2>
             <p className="text-sm text-gray-600">
-              Dieses Projekt wurde mit Unterst&uuml;tzung von{' '}
+              {t('infoDevToolsTextPre')}{' '}
               <a href="https://claude.ai/code" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">Claude Code</a>
-              {' '}(Anthropic) und{' '}
+              {' '}{t('infoDevToolsTextMid')}{' '}
               <a href="https://openai.com/codex" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-medium">Codex CLI</a>
-              {' '}(OpenAI) entwickelt. Vielen Dank an beide Teams f&uuml;r ihre herausragenden AI-Coding-Werkzeuge.
+              {' '}{t('infoDevToolsTextPost')}
             </p>
           </section>
         </div>
@@ -547,21 +511,26 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
 
 // ─── Sort button ────────────────────────────────────────────────────────────
 
-const SORT_OPTIONS: Array<{ key: 'date' | 'subject' | 'senderName' | 'numberOfAttachments'; label: string; defaultDir: 'asc' | 'desc' }> = [
-  { key: 'date', label: 'Datum', defaultDir: 'desc' },
-  { key: 'subject', label: 'Betreff', defaultDir: 'asc' },
-  { key: 'senderName', label: 'Absender', defaultDir: 'asc' },
-  { key: 'numberOfAttachments', label: 'Anhänge', defaultDir: 'desc' },
-]
+type SortField = 'date' | 'subject' | 'senderName' | 'numberOfAttachments'
+
+function getSortOptions(): Array<{ key: SortField; label: string; defaultDir: 'asc' | 'desc' }> {
+  return [
+    { key: 'date', label: t('sortDate'), defaultDir: 'desc' },
+    { key: 'subject', label: t('sortSubject'), defaultDir: 'asc' },
+    { key: 'senderName', label: t('sortSender'), defaultDir: 'asc' },
+    { key: 'numberOfAttachments', label: t('sortAttachments'), defaultDir: 'desc' },
+  ]
+}
 
 function SortButton({
   field, direction, onSort,
 }: {
-  field: 'date' | 'subject' | 'senderName' | 'numberOfAttachments'; direction: 'asc' | 'desc'
-  onSort: (field: 'date' | 'subject' | 'senderName' | 'numberOfAttachments', direction: 'asc' | 'desc') => void
+  field: SortField; direction: 'asc' | 'desc'
+  onSort: (field: SortField, direction: 'asc' | 'desc') => void
 }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const sortOptions = useMemo(() => getSortOptions(), [])
 
   useEffect(() => {
     if (!open) return
@@ -574,7 +543,7 @@ function SortButton({
     return () => { document.removeEventListener('mousedown', handler); document.removeEventListener('keydown', keyHandler) }
   }, [open])
 
-  const activeLabel = SORT_OPTIONS.find(o => o.key === field)?.label ?? field
+  const activeLabel = sortOptions.find(o => o.key === field)?.label ?? field
   const arrow = direction === 'asc' ? '\u2191' : '\u2193'
 
   return (
@@ -582,13 +551,13 @@ function SortButton({
       <button
         className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700 border border-gray-200 rounded flex items-center gap-1 hover:bg-gray-50 transition"
         onClick={() => setOpen(!open)}
-        title="Sortierung ändern"
+        title={t('sortChangeTitle')}
       >
         {arrow} {activeLabel}
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 w-40 bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-50">
-          {SORT_OPTIONS.map(opt => {
+          {sortOptions.map(opt => {
             const isActive = field === opt.key
             return (
               <button
@@ -645,6 +614,7 @@ function MenuBar({
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const ctrl = t('ctrlKey')
 
   useEffect(() => {
     if (!open) return
@@ -667,7 +637,7 @@ function MenuBar({
       <button
         className="px-2 py-1 text-sm text-gray-300 hover:bg-gray-700 hover:text-white rounded transition"
         onClick={onToggleSidebar}
-        title={sidebarVisible ? 'Ordnerleiste ausblenden (Strg+B)' : 'Ordnerleiste einblenden (Strg+B)'}
+        title={sidebarVisible ? tr('menuHideBar', { ctrl }) : tr('menuShowBar', { ctrl })}
       >
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
@@ -680,7 +650,7 @@ function MenuBar({
           }`}
           onClick={() => setOpen(!open)}
         >
-          Datei
+          {t('menuFile')}
         </button>
         {open && (
           <div className="absolute top-full left-0 mt-1 w-64 bg-white rounded-lg shadow-xl border border-gray-200 py-1 z-50">
@@ -695,8 +665,8 @@ function MenuBar({
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z" />
               </svg>
-              PST-Datei &ouml;ffnen...
-              <span className="ml-auto text-xs text-gray-400">Strg+O</span>
+              {t('menuOpenFile')}
+              <span className="ml-auto text-xs text-gray-400">{ctrl}+O</span>
             </button>
             {fileName && (
               <>
@@ -705,7 +675,7 @@ function MenuBar({
                   <div className="font-medium text-gray-600 truncate">{fileName}</div>
                   <div>{formatFileSize(fileSize)}</div>
                   {savedAt > 0 && (
-                    <div>Gespeichert: {new Date(savedAt).toLocaleString('de-DE')}</div>
+                    <div>{tr('menuSaved', { date: new Date(savedAt).toLocaleString(currentLocale) })}</div>
                   )}
                 </div>
                 <div className="border-t border-gray-100 my-1" />
@@ -716,7 +686,7 @@ function MenuBar({
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                   </svg>
-                  PST schlie&szlig;en &amp; Cache l&ouml;schen
+                  {t('menuCloseFile')}
                 </button>
               </>
             )}
@@ -728,14 +698,14 @@ function MenuBar({
         className="px-3 py-1 text-sm text-gray-300 hover:bg-gray-700 hover:text-white rounded transition"
         onClick={onShowHelp}
       >
-        Hilfe
+        {t('menuHelp')}
       </button>
 
       <button
         className="px-3 py-1 text-sm text-gray-300 hover:bg-gray-700 hover:text-white rounded transition"
         onClick={onShowInfo}
       >
-        Info
+        {t('menuInfo')}
       </button>
 
       {fileName && (
@@ -743,12 +713,12 @@ function MenuBar({
           {fileName} ({formatFileSize(fileSize)})
           {indexProgress && indexProgress.indexed < indexProgress.total && (
             <span className="ml-2 text-gray-500">
-              &middot; Indizierung: {indexProgress.indexed} / {indexProgress.total} Ordner
+              &middot; {tr('indexingProgress', { indexed: String(indexProgress.indexed), total: String(indexProgress.total) })}
             </span>
           )}
           {indexProgress && indexProgress.indexed >= indexProgress.total && (
             <span className="ml-2 text-green-400">
-              &middot; &#10003; {indexProgress.total} Ordner indiziert
+              &middot; {tr('indexingDone', { total: String(indexProgress.total) })}
             </span>
           )}
         </span>
@@ -790,7 +760,7 @@ function App() {
   const [sidebarWidth, setSidebarWidth] = useState(256)
   const [listWidth, setListWidth] = useState(384)
   const [sidebarVisible, setSidebarVisible] = useState(true)
-  const [sortField, setSortField] = useState<'date' | 'subject' | 'senderName' | 'numberOfAttachments'>('date')
+  const [sortField, setSortField] = useState<SortField>('date')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
 
   const debouncedQuery = useDebounce(searchQuery, 200)
@@ -868,11 +838,11 @@ function App() {
           return a.email.date < b.email.date ? -dir : a.email.date > b.email.date ? dir : 0
         }
         case 'subject':
-          return dir * a.email.subject.localeCompare(b.email.subject, 'de')
+          return dir * a.email.subject.localeCompare(b.email.subject, currentLocale)
         case 'senderName': {
           const sa = a.email.senderName || a.email.senderEmail
           const sb = b.email.senderName || b.email.senderEmail
-          return dir * sa.localeCompare(sb, 'de')
+          return dir * sa.localeCompare(sb, currentLocale)
         }
         case 'numberOfAttachments':
           return dir * (a.email.numberOfAttachments - b.email.numberOfAttachments)
@@ -887,7 +857,7 @@ function App() {
     return sortedPairs.map(p => pst.searchResults![p.origIndex])
   }, [isSearching, pst.searchResults, sortedPairs])
 
-  const handleSort = useCallback((field: 'date' | 'subject' | 'senderName' | 'numberOfAttachments', direction: 'asc' | 'desc') => {
+  const handleSort = useCallback((field: SortField, direction: 'asc' | 'desc') => {
     setSortField(field)
     setSortDirection(direction)
   }, [])
@@ -923,7 +893,7 @@ function App() {
   const handleFile = useCallback((file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase()
     if (ext !== 'pst' && ext !== 'ost') {
-      alert('Bitte eine PST- oder OST-Datei auswählen.')
+      alert(t('alertWrongFile'))
       return
     }
     abortSearch()
@@ -1000,6 +970,8 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedFolderPath, exportOptions])
 
+  const ctrl = t('ctrlKey')
+
   // ── Landing page ─────────────────────────────────────────────────────────────
   if (!pst.tree) {
     return (
@@ -1018,7 +990,7 @@ function App() {
               PST <span className="text-blue-400">Titan</span>
             </div>
             <div className="text-lg md:text-xl text-blue-300/80 font-medium tracking-wide mb-10">
-              Schluckt 50 GB zum Fr&uuml;hst&uuml;ck
+              {t('tagline')}
             </div>
 
             {/* Loading indicator (cached file) */}
@@ -1052,7 +1024,7 @@ function App() {
                     className="mt-3 px-4 py-1.5 text-sm text-slate-300 bg-slate-700/60 rounded hover:bg-slate-600 transition"
                     onClick={pst.abortLoad}
                   >
-                    Abbrechen
+                    {t('cancel')}
                   </button>
                 )}
               </div>
@@ -1066,7 +1038,7 @@ function App() {
             {!pst.loading && (
               <div className="mt-2">
                 <label className="inline-block px-8 py-3 rounded-lg bg-blue-600 text-white font-medium cursor-pointer hover:bg-blue-500 transition shadow-lg shadow-blue-600/30">
-                  PST-Datei &ouml;ffnen
+                  {t('openFile')}
                   <input
                     type="file"
                     accept=".pst,.ost"
@@ -1078,10 +1050,10 @@ function App() {
                   />
                 </label>
                 <p className="text-sm text-slate-500 mt-4">
-                  oder per Drag &amp; Drop ablegen
+                  {t('dropHint')}
                 </p>
                 <p className="text-xs text-slate-600 mt-2">
-                  Alle Daten werden lokal im Browser verarbeitet.
+                  {t('privacyHint')}
                 </p>
               </div>
             )}
@@ -1128,7 +1100,7 @@ function App() {
           <button
             className="text-red-400 hover:text-red-600 flex-shrink-0"
             onClick={pst.clearError}
-            title="Schließen"
+            title={t('cancel')}
           >&#10005;</button>
         </div>
       )}
@@ -1161,7 +1133,9 @@ function App() {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={selectedFolder ? `Suche in "${selectedFolder.name}" (Strg+F)` : 'Ordner auswählen, dann suchen (Strg+F)'}
+                placeholder={selectedFolder
+                  ? tr('searchPlaceholderIn', { name: selectedFolder.name, ctrl })
+                  : tr('searchPlaceholderSelect', { ctrl })}
                 className="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent bg-gray-50"
               />
               {searchQuery && (
@@ -1180,7 +1154,7 @@ function App() {
                 onChange={(e) => setSearchIncludeBody(e.target.checked)}
                 className="rounded border-gray-300 text-blue-500 focus:ring-blue-400 h-3.5 w-3.5"
               />
-              Auch Inhalt durchsuchen
+              {t('searchIncludeBody')}
             </label>
           </div>
 
@@ -1189,9 +1163,9 @@ function App() {
             {isSearching ? (
               <div className="min-w-0 w-full">
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-gray-800">{searchMatches} Treffer</span>
+                  <span className="font-semibold text-gray-800">{searchMatches} {t('hitsLabel')}</span>
                   <span className="text-xs text-gray-400 truncate">
-                    in {selectedFolder?.name || 'aktuellem Ordner'}
+                    {tr('searchIn', { name: selectedFolder?.name || '' })}
                   </span>
                   <div className="ml-auto flex items-center gap-2">
                     <SortButton field={sortField} direction={sortDirection} onSort={handleSort} />
@@ -1200,13 +1174,13 @@ function App() {
                         className="px-2 py-0.5 text-xs text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition"
                         onClick={pst.abortSearch}
                       >
-                        Suche abbrechen
+                        {t('searchAbort')}
                       </button>
                     )}
                     {!pst.searching && pst.searchResults && pst.searchResults.length > 0 && (
                       <ExportDialog
                         count={pst.searchResults.length}
-                        label="Treffer"
+                        label={t('hitsLabelExport')}
                         options={exportOptions}
                         onOptionsChange={setExportOptions}
                         onExport={handleSearchExport}
@@ -1222,13 +1196,16 @@ function App() {
                     <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
                       <span>
                         {pst.searching
-                          ? 'Suche läuft...'
+                          ? t('searchRunning')
                           : pst.searchProgress.cancelled
-                            ? 'Suche abgebrochen'
-                            : 'Suche abgeschlossen'}
+                            ? t('searchCancelled')
+                            : t('searchDone')}
                       </span>
                       <span>
-                        {searchScanned.toLocaleString('de-DE')} / {searchTotal.toLocaleString('de-DE')} Nachrichten
+                        {tr('searchProgress', {
+                          scanned: searchScanned.toLocaleString(currentLocale),
+                          total: searchTotal.toLocaleString(currentLocale),
+                        })}
                       </span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-1.5 overflow-hidden">
@@ -1243,15 +1220,18 @@ function App() {
             ) : (
               <div className="flex items-center gap-2">
                 <div className="min-w-0">
-                  <div className="font-semibold text-gray-800 truncate">{selectedFolder?.name || 'Ordner ausw\u00e4hlen'}</div>
+                  <div className="font-semibold text-gray-800 truncate">{selectedFolder?.name || t('selectFolder')}</div>
                   <div className="text-xs text-gray-400">
                     {selectedFolder ? (
                       selectedFolderPath && pst.folderLoadingPaths.has(selectedFolderPath) ? (
-                        `${folderEmailList?.length ?? 0} / ${pst.folderTotalCounts.get(selectedFolderPath) ?? selectedFolder.emailCount} Nachrichten`
+                        tr('messagesLoaded', {
+                          loaded: String(folderEmailList?.length ?? 0),
+                          total: String(pst.folderTotalCounts.get(selectedFolderPath) ?? selectedFolder.emailCount),
+                        })
                       ) : !folderEmailList && selectedFolder.emailCount > 0 ? (
-                        `${selectedFolder.emailCount} Nachrichten (wird geladen...)`
+                        tr('messagesLoadingPending', { count: String(selectedFolder.emailCount) })
                       ) : (
-                        `${folderEmailList?.length ?? selectedFolder.emailCount} Nachrichten`
+                        tr('messagesCount', { count: String(folderEmailList?.length ?? selectedFolder.emailCount) })
                       )
                     ) : ''}
                   </div>
@@ -1261,7 +1241,7 @@ function App() {
                   {selectedFolderPath && folderEmailList && folderEmailList.length > 0 && !pst.folderLoadingPaths.has(selectedFolderPath) && (
                     <ExportDialog
                       count={folderEmailList.length}
-                      label="Nachrichten"
+                      label={t('messagesLabelExport')}
                       options={exportOptions}
                       onOptionsChange={setExportOptions}
                       onExport={handleFolderExport}
@@ -1302,7 +1282,7 @@ function App() {
                   </h2>
                   <button
                     onClick={() => pst.shareEmail(selectedEmail.folderPath, selectedEmail.index)}
-                    title="E-Mail teilen"
+                    title={t('shareEmail')}
                     disabled={pst.searching}
                     className="shrink-0 p-1.5 rounded hover:bg-gray-200 text-gray-500 hover:text-gray-700 transition disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-gray-500"
                   >
@@ -1318,37 +1298,37 @@ function App() {
                     <>
                       {selectedEmail.contactName && (
                         <>
-                          <span className="text-gray-400">Name:</span>
+                          <span className="text-gray-400">{t('fieldName')}</span>
                           <span className="text-gray-700">{selectedEmail.contactName}</span>
                         </>
                       )}
                       {selectedEmail.contactCompany && (
                         <>
-                          <span className="text-gray-400">Firma:</span>
+                          <span className="text-gray-400">{t('fieldCompany')}</span>
                           <span className="text-gray-700">{selectedEmail.contactCompany}</span>
                         </>
                       )}
                       {selectedEmail.contactTitle && (
                         <>
-                          <span className="text-gray-400">Position:</span>
+                          <span className="text-gray-400">{t('fieldTitle')}</span>
                           <span className="text-gray-700">{selectedEmail.contactTitle}</span>
                         </>
                       )}
                       {selectedEmail.contactEmail && (
                         <>
-                          <span className="text-gray-400">E-Mail:</span>
+                          <span className="text-gray-400">{t('fieldEmail')}</span>
                           <span className="text-gray-700">{selectedEmail.contactEmail}</span>
                         </>
                       )}
                       {selectedEmail.contactPhone && (
                         <>
-                          <span className="text-gray-400">Telefon:</span>
+                          <span className="text-gray-400">{t('fieldPhone')}</span>
                           <span className="text-gray-700">{selectedEmail.contactPhone}</span>
                         </>
                       )}
                       {selectedEmail.contactAddress && (
                         <>
-                          <span className="text-gray-400">Adresse:</span>
+                          <span className="text-gray-400">{t('fieldAddress')}</span>
                           <span className="text-gray-700 whitespace-pre-line">{selectedEmail.contactAddress}</span>
                         </>
                       )}
@@ -1357,109 +1337,109 @@ function App() {
                     <>
                       {selectedEmail.startTime && (
                         <>
-                          <span className="text-gray-400">Beginn:</span>
+                          <span className="text-gray-400">{t('fieldStart')}</span>
                           <span className="text-gray-700">{formatDate(selectedEmail.startTime)}</span>
                         </>
                       )}
                       {selectedEmail.endTime && (
                         <>
-                          <span className="text-gray-400">Ende:</span>
+                          <span className="text-gray-400">{t('fieldEnd')}</span>
                           <span className="text-gray-700">{formatDate(selectedEmail.endTime)}</span>
                         </>
                       )}
                       {!!selectedEmail.duration && (
                         <>
-                          <span className="text-gray-400">Dauer:</span>
-                          <span className="text-gray-700">{selectedEmail.duration} Minuten</span>
+                          <span className="text-gray-400">{t('fieldDuration')}</span>
+                          <span className="text-gray-700">{tr('fieldDurationMin', { dur: String(selectedEmail.duration) })}</span>
                         </>
                       )}
                       {selectedEmail.location && (
                         <>
-                          <span className="text-gray-400">Ort:</span>
+                          <span className="text-gray-400">{t('fieldLocation')}</span>
                           <span className="text-gray-700">{selectedEmail.location}</span>
                         </>
                       )}
                       {selectedEmail.attendees && (
                         <>
-                          <span className="text-gray-400">Teilnehmer:</span>
+                          <span className="text-gray-400">{t('fieldAttendees')}</span>
                           <span className="text-gray-700">{selectedEmail.attendees}</span>
                         </>
                       )}
                       {selectedEmail.senderName && (
                         <>
-                          <span className="text-gray-400">Organisator:</span>
+                          <span className="text-gray-400">{t('fieldOrganizer')}</span>
                           <span className="text-gray-700">{selectedEmail.senderName}</span>
                         </>
                       )}
                       {selectedEmail.isRecurring && (
                         <>
-                          <span className="text-gray-400">Wiederholung:</span>
-                          <span className="text-gray-700">{selectedEmail.recurrencePattern || 'Ja'}</span>
+                          <span className="text-gray-400">{t('fieldRecurrence')}</span>
+                          <span className="text-gray-700">{selectedEmail.recurrencePattern || t('yes')}</span>
                         </>
                       )}
                       {selectedEmail.displayTo && (
                         <>
-                          <span className="text-gray-400">An:</span>
+                          <span className="text-gray-400">{t('fieldTo')}</span>
                           <span className="text-gray-700">{selectedEmail.displayTo}</span>
                         </>
                       )}
                     </>
                   ) : selectedEmail.itemType === 'task' ? (
                     <>
-                      <span className="text-gray-400">Status:</span>
+                      <span className="text-gray-400">{t('fieldStatus')}</span>
                       <span className="text-gray-700">
-                        {['Nicht begonnen', 'In Bearbeitung', 'Erledigt', 'Wartend', 'Zurückgestellt'][selectedEmail.taskStatus ?? 0] ?? 'Unbekannt'}
+                        {getTaskStatusLabel(selectedEmail.taskStatus)}
                         {selectedEmail.percentComplete != null && ` (${selectedEmail.percentComplete}%)`}
                       </span>
                       {selectedEmail.taskOwner && (
                         <>
-                          <span className="text-gray-400">Besitzer:</span>
+                          <span className="text-gray-400">{t('fieldOwner')}</span>
                           <span className="text-gray-700">{selectedEmail.taskOwner}</span>
                         </>
                       )}
                       {selectedEmail.date && (
                         <>
-                          <span className="text-gray-400">F&auml;llig:</span>
+                          <span className="text-gray-400">{t('fieldDue')}</span>
                           <span className="text-gray-700">{formatDate(selectedEmail.date)}</span>
                         </>
                       )}
                       {selectedEmail.senderName && (
                         <>
-                          <span className="text-gray-400">Von:</span>
+                          <span className="text-gray-400">{t('fieldFrom')}</span>
                           <span className="text-gray-700">{selectedEmail.senderName}</span>
                         </>
                       )}
                       {selectedEmail.displayTo && (
                         <>
-                          <span className="text-gray-400">An:</span>
+                          <span className="text-gray-400">{t('fieldTo')}</span>
                           <span className="text-gray-700">{selectedEmail.displayTo}</span>
                         </>
                       )}
                     </>
                   ) : (
                     <>
-                      <span className="text-gray-400">Von:</span>
+                      <span className="text-gray-400">{t('fieldFrom')}</span>
                       <span className="text-gray-700">
                         {selectedEmail.senderName}
                         {selectedEmail.senderEmail && (
                           <span className="text-gray-400 ml-1">&lt;{selectedEmail.senderEmail}&gt;</span>
                         )}
                       </span>
-                      <span className="text-gray-400">An:</span>
+                      <span className="text-gray-400">{t('fieldTo')}</span>
                       <span className="text-gray-700">{selectedEmail.displayTo}</span>
                       {selectedEmail.displayCC && (
                         <>
-                          <span className="text-gray-400">CC:</span>
+                          <span className="text-gray-400">{t('fieldCC')}</span>
                           <span className="text-gray-700">{selectedEmail.displayCC}</span>
                         </>
                       )}
-                      <span className="text-gray-400">Datum:</span>
+                      <span className="text-gray-400">{t('fieldDate')}</span>
                       <span className="text-gray-700">{formatDate(selectedEmail.date)}</span>
                     </>
                   )}
                   {isSearching && (
                     <>
-                      <span className="text-gray-400">Ordner:</span>
+                      <span className="text-gray-400">{t('fieldFolder')}</span>
                       <span className="text-gray-700">{selectedEmail.folderPath}</span>
                     </>
                   )}
@@ -1494,7 +1474,7 @@ function App() {
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                     </svg>
-                    Wird geladen...
+                    {t('loading')}
                   </div>
                 )}
               </div>
@@ -1503,7 +1483,7 @@ function App() {
             <div className="flex-1 flex items-center justify-center text-gray-400">
               <div className="text-center">
                 <div className="text-4xl mb-2">&#9993;</div>
-                <p>Nachricht ausw&auml;hlen</p>
+                <p>{t('selectMessage')}</p>
               </div>
             </div>
           )}

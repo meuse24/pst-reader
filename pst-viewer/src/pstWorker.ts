@@ -155,7 +155,7 @@ function reportParseProgress() {
   parseLastReportTime = now
   post({
     type: 'PROGRESS',
-    message: `PST wird verarbeitet... (${formatBytes(parseBytesRead)} gelesen)`,
+    message: `Processing PST... (${formatBytes(parseBytesRead)} read)`,
     phase: 'parse',
   })
 }
@@ -884,7 +884,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         if (!opfsOk) {
           // No OPFS (e.g. file:// URL) — lazy random-access via FileReaderSync
-          post({ type: 'PROGRESS', message: 'PST wird verarbeitet...', phase: 'parse' })
+          post({ type: 'PROGRESS', message: 'Processing PST...', phase: 'parse' })
           const tree = initPSTFromFile(file)
           if (loadOpId !== myOpId) return
           post({ type: 'READY', tree, fileName: file.name, fileSize: file.size, savedAt: 0 })
@@ -897,7 +897,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         if (!capacity.ok) {
           post({
             type: 'ERROR',
-            message: `Nicht genügend Speicher verfügbar. Benötigt: ${formatBytes(Math.ceil(file.size * 1.1 + 50_000_000))}, Verfügbar: ${formatBytes(capacity.available)}.`,
+            message: `Not enough storage available. Required: ${formatBytes(Math.ceil(file.size * 1.1 + 50_000_000))}, Available: ${formatBytes(capacity.available)}.`,
           })
           return
         }
@@ -907,7 +907,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         if (loadOpId !== myOpId) return
 
         // Stream file to OPFS
-        post({ type: 'PROGRESS', message: 'Datei wird in lokalen Cache kopiert...', percent: 0, phase: 'copy' })
+        post({ type: 'PROGRESS', message: 'Copying to local cache...', percent: 0, phase: 'copy' })
         const fileHandle = await getOpfsHandle(true)
         if (loadOpId !== myOpId) return
         if (!fileHandle) {
@@ -953,7 +953,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
               const percent = Math.round(offset / totalSize * 100)
               post({
                 type: 'PROGRESS',
-                message: `Datei wird in lokalen Cache kopiert... (${formatBytes(offset)} / ${formatBytes(totalSize)})`,
+                message: `Copying to local cache... (${formatBytes(offset)} / ${formatBytes(totalSize)})`,
                 percent,
                 phase: 'copy',
               })
@@ -971,7 +971,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         } catch (err) {
           reader.cancel().catch(() => {})
           await closeSyncHandle()
-          post({ type: 'ERROR', message: `Fehler beim Kopieren der Datei: ${err instanceof Error ? err.message : String(err)}` })
+          post({ type: 'ERROR', message: `Error copying file: ${err instanceof Error ? err.message : String(err)}` })
           return
         }
 
@@ -981,7 +981,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         }
 
         // Parse PST from OPFS
-        post({ type: 'PROGRESS', message: 'PST wird verarbeitet...', percent: 100, phase: 'parse' })
+        post({ type: 'PROGRESS', message: 'Processing PST...', percent: 100, phase: 'parse' })
         const tree = initPSTFromOPFS(file.name, file.size)
 
         // Save metadata to IDB (NOT the file data)
@@ -996,7 +996,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
       case 'LOAD_BUFFER': {
         // Legacy path — kept for small files / non-OPFS browsers
-        post({ type: 'PROGRESS', message: 'PST wird verarbeitet...', phase: 'parse' })
+        post({ type: 'PROGRESS', message: 'Processing PST...', phase: 'parse' })
         const tree = initPSTLegacy(new Uint8Array(cmd.buffer), cmd.fileName)
         post({ type: 'READY', tree, fileName: currentFileName, fileSize: currentFileSize, savedAt: 0 })
         break
@@ -1004,7 +1004,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
       case 'LOAD_CACHED': {
         const myOpId = ++loadOpId
-        post({ type: 'PROGRESS', message: 'Gespeicherte Datei wird geladen...' })
+        post({ type: 'PROGRESS', message: 'Loading cached file...' })
 
         // Load metadata from IDB
         const meta = await loadMetadataFromIDB()
@@ -1063,7 +1063,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           return
         }
 
-        post({ type: 'PROGRESS', message: 'PST wird verarbeitet...', phase: 'parse' })
+        post({ type: 'PROGRESS', message: 'Processing PST...', phase: 'parse' })
         try {
           const tree = initPSTFromOPFS(meta.fileName, meta.fileSize)
           post({ type: 'READY', tree, fileName: meta.fileName, fileSize: meta.fileSize, savedAt: meta.savedAt })
@@ -1207,7 +1207,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             }
           } catch (err) {
             if (emails.length === 0) {
-              post({ type: 'ERROR', message: `Fehler beim Lesen des Ordners: ${err instanceof Error ? err.message : String(err)}` })
+              post({ type: 'ERROR', message: `Error reading folder: ${err instanceof Error ? err.message : String(err)}` })
               return
             }
             // Partial read — continue with what we have
@@ -1261,7 +1261,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           }
         } catch (err) {
           if (emails.length === 0) {
-            post({ type: 'ERROR', message: `Fehler beim Lesen des Ordners: ${err instanceof Error ? err.message : String(err)}` })
+            post({ type: 'ERROR', message: `Error reading folder: ${err instanceof Error ? err.message : String(err)}` })
             return
           }
           // Partial read — continue with what we have
@@ -1296,7 +1296,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             post({ type: 'ERROR', message: 'E-Mail nicht gefunden' })
           }
         } catch (err: unknown) {
-          post({ type: 'ERROR', message: `Fehler beim Laden: ${err instanceof Error ? err.message : String(err)}` })
+          post({ type: 'ERROR', message: `Error loading: ${err instanceof Error ? err.message : String(err)}` })
         }
         break
       }
@@ -1339,7 +1339,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           const mimeType = att.mimeTag || 'application/octet-stream'
           post({ type: 'ATTACHMENT_DATA', fileName, mimeType, data: ab }, [ab])
         } catch (err: unknown) {
-          post({ type: 'ERROR', message: `Fehler beim Laden des Anhangs: ${err instanceof Error ? err.message : String(err)}` })
+          post({ type: 'ERROR', message: `Error loading attachment: ${err instanceof Error ? err.message : String(err)}` })
         }
         break
       }
@@ -1365,7 +1365,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           const ab = emlData.buffer.slice(emlData.byteOffset, emlData.byteOffset + emlData.byteLength) as ArrayBuffer
           post({ type: 'EML_READY', data: ab, fileName }, [ab])
         } catch (err: unknown) {
-          post({ type: 'ERROR', message: `Fehler beim Erstellen der EML: ${err instanceof Error ? err.message : String(err)}` })
+          post({ type: 'ERROR', message: `Error building EML: ${err instanceof Error ? err.message : String(err)}` })
         }
         break
       }
@@ -1716,11 +1716,11 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         const total = emailRefs.length
 
         if (total === 0) {
-          post({ type: 'ERROR', message: 'Keine E-Mails zum Exportieren.' })
+          post({ type: 'ERROR', message: 'No emails to export.' })
           return
         }
 
-        post({ type: 'PROGRESS', message: `Export wird vorbereitet... (0 / ${total})` })
+        post({ type: 'PROGRESS', message: `Preparing export... (0 / ${total})` })
 
         const files: Record<string, Uint8Array> = {}
         const usedNames = new Map<string, number>()
@@ -1755,7 +1755,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
           // Progress every 10 emails
           if ((i + 1) % 10 === 0 || i === total - 1) {
-            post({ type: 'PROGRESS', message: `E-Mails werden exportiert... (${i + 1} / ${total})` })
+            post({ type: 'PROGRESS', message: `Exporting emails... (${i + 1} / ${total})` })
             await yieldToMessageLoop()
             if (loadOpId !== myOpId) return
           }
@@ -1763,7 +1763,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         if (loadOpId !== myOpId) return
 
-        post({ type: 'PROGRESS', message: 'ZIP wird erstellt...' })
+        post({ type: 'PROGRESS', message: 'Creating ZIP...' })
         await yieldToMessageLoop()
         if (loadOpId !== myOpId) return
 
@@ -1790,11 +1790,11 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         const totalCount = folder.contentCount
         if (totalCount === 0) {
-          post({ type: 'ERROR', message: 'Keine E-Mails zum Exportieren.' })
+          post({ type: 'ERROR', message: 'No emails to export.' })
           return
         }
 
-        post({ type: 'PROGRESS', message: `Export wird vorbereitet... (0 / ${totalCount})` })
+        post({ type: 'PROGRESS', message: `Preparing export... (0 / ${totalCount})` })
 
         const files: Record<string, Uint8Array> = {}
         const usedNames = new Map<string, number>()
@@ -1825,7 +1825,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
             idx++
             if (idx % 10 === 0 || idx === totalCount) {
-              post({ type: 'PROGRESS', message: `E-Mails werden exportiert... (${idx} / ${totalCount})` })
+              post({ type: 'PROGRESS', message: `Exporting emails... (${idx} / ${totalCount})` })
               await yieldToMessageLoop()
               if (loadOpId !== myOpId) return
             }
@@ -1834,7 +1834,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           }
         } catch (err) {
           if (Object.keys(files).length === 0) {
-            post({ type: 'ERROR', message: `Fehler beim Lesen des Ordners: ${err instanceof Error ? err.message : String(err)}` })
+            post({ type: 'ERROR', message: `Error reading folder: ${err instanceof Error ? err.message : String(err)}` })
             return
           }
           // Partial read — export what we have
@@ -1842,7 +1842,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         if (loadOpId !== myOpId) return
 
-        post({ type: 'PROGRESS', message: 'ZIP wird erstellt...' })
+        post({ type: 'PROGRESS', message: 'Creating ZIP...' })
         await yieldToMessageLoop()
         if (loadOpId !== myOpId) return
 
