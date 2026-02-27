@@ -785,7 +785,6 @@ function App() {
   loadingRef.current = pst.loading
 
   const [exportOptions, setExportOptions] = useState<ExportOptions>({ includeHTML: true, includeTXT: true, includeAttachments: false })
-  const [showSplash, setShowSplash] = useState(true)
   const [showHelp, setShowHelp] = useState(false)
   const [showInfo, setShowInfo] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(256)
@@ -1005,58 +1004,52 @@ function App() {
   if (!pst.tree) {
     return (
       <div
-        className="flex flex-col min-h-screen bg-gray-50"
+        className="flex flex-col min-h-screen bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900"
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
       >
-        <MenuBar
-          fileName={pst.fileName}
-          fileSize={pst.fileSize}
-          savedAt={pst.savedAt}
-          onOpenFile={handleFile}
-          onCloseFile={handleClose}
-          onShowHelp={() => setShowHelp(true)}
-          onShowInfo={() => setShowInfo(true)}
-          sidebarVisible={sidebarVisible}
-          onToggleSidebar={() => setSidebarVisible(v => !v)}
-          loading={pst.loading}
-          indexProgress={pst.indexProgress}
-        />
         <div className="flex-1 flex items-center justify-center">
-          <div className="text-center p-12 border-2 border-dashed border-gray-300 rounded-xl max-w-lg w-full mx-4 bg-white">
-            <div className="text-5xl mb-4">&#128231;</div>
-            <h1 className="text-2xl font-bold text-gray-800 mb-2">PST Viewer</h1>
-            <p className="text-gray-500 mb-6">
-              Outlook PST-Datei per Drag &amp; Drop oder Men&uuml; &ouml;ffnen
-            </p>
+          <div className="text-center animate-[fadeIn_0.6s_ease-out]">
+            {/* Branding */}
+            <div className="text-sm md:text-base font-semibold tracking-[0.3em] uppercase text-blue-400/70 mb-3">
+              MEUSE24
+            </div>
+            <div className="text-6xl md:text-8xl font-black tracking-tight text-white mb-2 drop-shadow-lg">
+              PST <span className="text-blue-400">Titan</span>
+            </div>
+            <div className="text-lg md:text-xl text-blue-300/80 font-medium tracking-wide mb-10">
+              Schluckt 50 GB zum Fr&uuml;hst&uuml;ck
+            </div>
+
+            {/* Loading indicator (cached file) */}
             {pst.loading && (
-              <div className="mb-4">
-                <div className="text-blue-600 font-medium mb-2">
-                  <svg className="inline-block w-4 h-4 mr-2 animate-spin" viewBox="0 0 24 24" fill="none">
+              <div className="mb-6 max-w-sm mx-auto">
+                <div className="text-blue-300 font-medium mb-3 flex items-center justify-center">
+                  <svg className="w-4 h-4 mr-2 animate-spin" viewBox="0 0 24 24" fill="none">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
                   {pst.loadingMsg}
                 </div>
                 {pst.loadingPhase === 'copy' && (
-                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
                     <div
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                      className="bg-blue-400 h-2 rounded-full transition-all duration-300"
                       style={{ width: `${pst.progress}%` }}
                     />
                   </div>
                 )}
                 {pst.loadingPhase === 'parse' && (
-                  <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
                     <div
-                      className="bg-blue-600 h-2 rounded-full animate-[indeterminate_1.5s_ease-in-out_infinite]"
+                      className="bg-blue-400 h-2 rounded-full animate-[indeterminate_1.5s_ease-in-out_infinite]"
                       style={{ width: '30%' }}
                     />
                   </div>
                 )}
                 {pst.loadingPhase && (
                   <button
-                    className="mt-3 px-4 py-1.5 text-sm text-gray-600 bg-gray-100 rounded hover:bg-gray-200 transition"
+                    className="mt-3 px-4 py-1.5 text-sm text-slate-300 bg-slate-700/60 rounded hover:bg-slate-600 transition"
                     onClick={pst.abortLoad}
                   >
                     Abbrechen
@@ -1064,25 +1057,34 @@ function App() {
                 )}
               </div>
             )}
+
             {pst.error && (
-              <div className="mb-4 text-red-600 bg-red-50 p-3 rounded">{pst.error}</div>
+              <div className="mb-6 text-red-300 bg-red-900/30 p-3 rounded max-w-sm mx-auto">{pst.error}</div>
             )}
-            <label className={`inline-block px-6 py-3 rounded-lg transition ${pst.loading ? 'bg-gray-400 text-gray-200 cursor-not-allowed' : 'bg-blue-600 text-white cursor-pointer hover:bg-blue-700'}`}>
-              PST-Datei ausw&auml;hlen
-              <input
-                type="file"
-                accept=".pst,.ost"
-                className="hidden"
-                disabled={pst.loading}
-                onChange={(e) => {
-                  const file = e.target.files?.[0]
-                  if (file) handleFile(file)
-                }}
-              />
-            </label>
-            <p className="text-xs text-gray-400 mt-4">
-              Alle Daten werden lokal im Browser verarbeitet und gecacht.
-            </p>
+
+            {/* File picker — only when not loading */}
+            {!pst.loading && (
+              <div className="mt-2">
+                <label className="inline-block px-8 py-3 rounded-lg bg-blue-600 text-white font-medium cursor-pointer hover:bg-blue-500 transition shadow-lg shadow-blue-600/30">
+                  PST-Datei &ouml;ffnen
+                  <input
+                    type="file"
+                    accept=".pst,.ost"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) handleFile(file)
+                    }}
+                  />
+                </label>
+                <p className="text-sm text-slate-500 mt-4">
+                  oder per Drag &amp; Drop ablegen
+                </p>
+                <p className="text-xs text-slate-600 mt-2">
+                  Alle Daten werden lokal im Browser verarbeitet.
+                </p>
+              </div>
+            )}
           </div>
         </div>
         <input
@@ -1522,31 +1524,6 @@ function App() {
 
       {showHelp && <HelpDialog onClose={() => setShowHelp(false)} />}
       {showInfo && <InfoDialog onClose={() => setShowInfo(false)} />}
-
-      {showSplash && (
-        <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 cursor-pointer select-none"
-          onClick={() => setShowSplash(false)}
-          onKeyDown={() => setShowSplash(false)}
-          tabIndex={0}
-          ref={(el) => el?.focus()}
-        >
-          <div className="text-center animate-[fadeIn_0.6s_ease-out]">
-            <div className="text-sm md:text-base font-semibold tracking-[0.3em] uppercase text-blue-400/70 mb-3">
-              MEUSE24
-            </div>
-            <div className="text-6xl md:text-8xl font-black tracking-tight text-white mb-2 drop-shadow-lg">
-              PST <span className="text-blue-400">Titan</span>
-            </div>
-            <div className="text-lg md:text-xl text-blue-300/80 font-medium tracking-wide">
-              Schluckt 50 GB zum Fr&uuml;hst&uuml;ck
-            </div>
-            <div className="mt-8 text-sm text-slate-500 animate-pulse">
-              Klicken oder beliebige Taste dr&uuml;cken
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
