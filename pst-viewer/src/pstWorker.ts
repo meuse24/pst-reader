@@ -206,8 +206,14 @@ function restoreReadSync() {
 
 let fileRef: File | null = null
 
-const CHUNK_SIZE = 4 * 1024 * 1024 // 4 MB
-const MAX_CHUNKS = 8               // 32 MB max cache
+// Adaptive chunk cache: scale with available device RAM.
+// navigator.deviceMemory is available in Chrome/Edge (Firefox falls back to 4 GB estimate).
+const _deviceMemoryGB: number = (navigator as unknown as { deviceMemory?: number }).deviceMemory ?? 4
+// Larger chunks on high-memory devices reduce the number of FileReaderSync calls.
+const CHUNK_SIZE = _deviceMemoryGB >= 4 ? 8 * 1024 * 1024 : 4 * 1024 * 1024
+// Cache budget: ~6 % of device RAM, clamped to [64 MB, 512 MB].
+const _cacheBudgetBytes = Math.min(512, Math.max(64, Math.round(_deviceMemoryGB * 64))) * 1024 * 1024
+const MAX_CHUNKS = Math.floor(_cacheBudgetBytes / CHUNK_SIZE)
 const chunkCache = new Map<number, ArrayBuffer>()
 const chunkLRU: number[] = []
 
@@ -474,7 +480,7 @@ function getFolderPriority(path: string): number {
   const lower = path.toLowerCase()
   for (let i = 0; i < PRIORITY_FOLDER_NAMES.length; i++) {
     const name = PRIORITY_FOLDER_NAMES[i]
-    if (lower === name || lower.endsWith('/' + name)) return i
+    if (lower === name || lower.endsWith(' / ' + name)) return i
   }
   return PRIORITY_FOLDER_NAMES.length
 }
@@ -1312,7 +1318,6 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         emailCache.delete(cmd.path)
 
         const emails: EmailMeta[] = []
-        emailCache.set(cmd.path, emails)
         let pageStart = 0
         let page = 0
 
@@ -1357,6 +1362,7 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         // Only mark complete + send DONE if not cancelled
         if (folderLoadOpId !== myFolderOpId) return
         if (totalCachedEmails + emails.length > EMAIL_CACHE_MAX_EMAILS) evictEmailCache(emails.length)
+        emailCache.set(cmd.path, emails)
         completedFolders.add(cmd.path)
         totalCachedEmails += emails.length
         post({ type: 'FOLDER_DONE', path: cmd.path, totalCount: emails.length })

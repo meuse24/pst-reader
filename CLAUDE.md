@@ -41,8 +41,8 @@ Alle schwere Arbeit laeuft im Worker-Thread:
 - **Lazy Body Loading**: `moveChildCursorTo(index)` + `getNextChild()` laedt Body nur fuer ausgewaehlte Mail
 - **IndexedDB**: Komplett im Worker (Load/Save/Delete)
 - **Item-Typ-Erkennung**: `messageClass`-basierte Erkennung von Terminen (`IPM.Appointment`/`IPM.Schedule.Meeting`), Aufgaben (`IPM.Task`), Kontakten (`IPM.Contact`/`IPM.DistList`) und Journal-Eintraegen (`IPM.Activity`). Typ-spezifische Metadaten werden aus `PSTAppointment`/`PSTTask`/`PSTContact` extrahiert (Direktimport wie PSTUtil). `EmailMeta.itemType` ist optional (undefined = email, spart Structured-Clone-Bytes). Extra-Suchfelder (location, taskOwner, contactName/company/email) werden an `_searchText` angehaengt; `detectMatchField()` unterscheidet Attachment- von Extra-Parts via `attachmentNames.length` und liefert typ-spezifische Labels (Ort/Besitzer/Kontaktdaten).
-- **Suche**: Volltextsuche im ausgewaehlten Ordner (Betreff, Absender, Empfaenger, Anhaenge, typ-spezifische Felder und Body). Ergebnisse werden paginiert/chunked geliefert, mit Fortschritt und Abbruch (`ABORT_SEARCH`) auch fuer sehr grosse Ordner. Treffer koennen bereits waehrend der laufenden Suche geoeffnet werden; der Suchcursor wird nach jedem Yield index-basiert re-synchronisiert. `SEARCH_YIELD_INTERVAL` = 200ms (reduziert Context-Switches, da Cursor-Re-Sync teuer ist). `detectMatchField()` nutzt vorberechneten `_searchText` (kein redundantes `toLowerCase()`). Slow-Path schreibt extrahierte Metadaten in `emailCache` zurueck (Cache-Writeback).
-- **Hintergrund-Indizierung**: `INDEX_ALL` Command iteriert nach `READY` automatisch alle Ordner aus `folderCache`, laedt Metadaten in `emailCache`. Yield alle ~200 Mails, pausiert bei User-Interaktion (`searchOpId`/`folderLoadOpId`-Change), bricht bei neuer Datei sauber ab (`indexOpId`). Fehlerhafte Ordner werden uebersprungen (try/catch pro Ordner). Fortschritt via `INDEX_PROGRESS` in der Titelleiste ("Indizierung: X / Y Ordner").
+- **Suche**: Volltextsuche im ausgewaehlten Ordner (Betreff, Absender, Empfaenger, Anhaenge, typ-spezifische Felder und Body). Fast-Path (RAM-only) wenn Ordner vollstaendig indiziert und kein Body-Search. Slow-Path liest per Cursor aus PST + schreibt Metadaten in `emailCache` zurueck (Cache-Writeback). SEARCH setzt `searchingActive = true` und `activeSearchFolderPath` (try/finally garantiert Bereinigung). Slow-Path inkrementiert `folderLoadOpId` um laufende FETCH_FOLDER-Cursor abzubrechen. Einzelne fehlerhafte Mails werden im Slow-Path per try/catch uebersprungen. Cache-Writeback nutzt `scanned >= total` (erlaubt fehlende Eintraege durch broken emails). Ergebnisse paginiert/chunked, Abbruch via `ABORT_SEARCH`. Treffer koennen waehrend laufender Suche geoeffnet werden. `SEARCH_YIELD_INTERVAL` = 200ms. `detectMatchField()` nutzt vorberechneten `_searchText`.
+- **Hintergrund-Indizierung**: `INDEX_ALL` Command iteriert nach `READY` automatisch alle Ordner aus `folderCache`, laedt Metadaten in `emailCache`. Ordner werden priorisiert sortiert (Posteingang/Gesendete zuerst, dann absteigend nach `contentCount`). Yield alle ~200 Mails. Waehrend einer aktiven Suche pausiert INDEX_ALL vollstaendig (`searchingActive`-Flag, 50ms-Polling) statt nur 200ms. `activeSearchFolderPath` verhindert Cursor-Konflikte: wenn SEARCH denselben Ordner per Cursor durchlaeuft, wartet INDEX_ALL bis SEARCH fertig ist und prueft dann `completedFolders`. Fehlerhafte Ordner werden uebersprungen (try/catch pro Ordner). Memory-Cap: `emailCache` wird auf `EMAIL_CACHE_MAX_EMAILS = 500_000` begrenzt; `evictEmailCache()` entfernt bei Ueberschreitung die neuesten (unwichtigsten) Eintraege (Map-Insertion-Order rueckwaerts). `totalCachedEmails`-Zaehler wird an allen `emailCache.set()`/`completedFolders.add()`-Stellen gepflegt. `INDEX_PROGRESS` mit optionalem `paused: true` wenn auf Suche gewartet wird. Fortschritt in der Titelleiste ("Indizierung: X / Y Ordner").
 - **EML-Export**: Suchergebnisse oder ganze Ordner als EML-Dateien in ZIP exportieren. RFC-konformer EML-Builder:
   - RFC 2047 Encoded-Word Splitting (max 75 Zeichen pro Wort, UTF-8-Zeichengrenzen)
   - RFC 5322 Header Folding (SHOULD 78, MUST 998 Zeichen pro Zeile)
@@ -113,23 +113,29 @@ Die Build-Ausgabe wird auch nach `pst-viewer.html` im Projekt-Root kopiert.
 - IndexedDB komplett im Worker
 - **Item-Typ-Erkennung**: Termine, Aufgaben, Kontakte und Journal-Eintraege werden via `messageClass` erkannt. Farbige Badges in der Liste, typ-spezifische Snippets (Uhrzeit/Ort, Status/Fortschritt, Firma/Telefon) und angepasste Detail-Ansichten (Beginn/Ende/Teilnehmer, Status/Faellig/Besitzer, Name/Firma/E-Mail/Telefon/Adresse). Suche durchsucht auch typ-spezifische Felder mit korrekten Match-Labels.
 - Volltextsuche im ausgewaehlten Ordner (inkl. Body und typ-spezifische Felder) mit Fortschrittsanzeige, chunked Ergebnislieferung und Abbrechen; Treffer koennen bereits waehrend der Suche geoeffnet werden. Slow-Path Metadaten-Cache-Writeback.
-- **Hintergrund-Indizierung**: Alle Ordner werden nach dem Oeffnen automatisch indiziert (`INDEX_ALL`). Fortschritt in Titelleiste, fehlerhafte Ordner werden uebersprungen, User-Interaktion hat Vorrang.
-- Virtualisierte E-Mail-Liste
+- **Hintergrund-Indizierung**: Alle Ordner werden nach dem Oeffnen automatisch indiziert (`INDEX_ALL`). Priorisiert sortiert (Posteingang/Gesendete zuerst). Pausiert vollstaendig waehrend aktiver Suche (`searchingActive`-Polling). Fortschritt in Titelleiste ("Indizierung: X / Y Ordner", "(pausiert)" in gelb). Fehlerhafte Ordner uebersprungen.
+- **Memory-Cap fuer grosse Dateien**: `emailCache` begrenzt auf `EMAIL_CACHE_MAX_EMAILS = 500_000`. Bei Ueberschreitung entfernt `evictEmailCache()` die neuesten (unwichtigsten) Eintraege. `totalCachedEmails`-Zaehler an allen Cache-Set-Stellen gepflegt.
+- **Adaptiver Chunk-Cache (file://)**: `CHUNK_SIZE` (4 MB bei <4 GB RAM, 8 MB sonst) und Cache-Budget (64–512 MB, ~6% von `navigator.deviceMemory`) passen sich automatisch an. Ermoeglicht auch >20 GB PST-Dateien per `file://` zu verarbeiten.
+- Virtualisierte E-Mail-Liste (nur ~15 DOM-Nodes)
 - **EML-Export**: Suchergebnisse oder ganze Ordner als EML in ZIP exportieren (HTML/TXT/Attachments waehlbar, strikt RFC-konform, im Worker). Warnung bei grossen Exporten.
 - **Ordner-Export**: `EXPORT_FOLDER` Command — iteriert Ordner direkt via Cursor (effizienter als Einzel-Lookups)
 - **E-Mail teilen**: Einzelne E-Mail per Web Share API oder .eml-Download teilen (Share-Button im Detail-Header)
 - **Fortschrittsanzeige**: Copy-Phase mit determiniertem Balken + Prozent, Parse-Phase mit indeterminiertem Balken + gelesene Bytes. Throttled auf ~2s-Intervalle um Ladevorgang nicht auszubremsen.
 - **Abbrechen-Button**: Ladevorgang waehrend Copy- und Parse-Phase abbrechbar. UI-Sperre verhindert gleichzeitiges Oeffnen weiterer Dateien.
-- **Hilfe-Dialog**: Ausfuehrliche Hilfe mit Tastenkuerzeln, Browser-Kompatibilitaet, Datenschutz
+- **Sidebar-Animation**: CSS `transition-[width] duration-200` statt konditionellem Render; innere div bleibt stabil (keine Remounts).
+- **App-Icon**: SVG-Ordner-Icon als base64-Favicon im `index.html`. Gleiche SVG als `AppIcon`-Komponente im Info-Dialog.
+- **Hilfe-Dialog**: Ausfuehrliche Hilfe mit Tastenkuerzeln, "Grosse Dateien (>1 GB)"-Abschnitt, Browser-Kompatibilitaet, Datenschutz
 - **Info-Dialog**: Copyright, Tech Stack, Bibliotheken mit Autor/Version/Lizenz, Dank an AI-Tools
-- Ziel: PST-Dateien bis 1GB+ fluessig verarbeiten
+- Ziel: PST/OST-Dateien bis >20 GB fluessig verarbeiten
 
-#### Speicher-Impact (500MB PST, geschaetzt)
+#### Speicher-Impact (500 MB PST, geschaetzt)
 | | v1 | v2 |
 |---|---|---|
-| Buffer-Kopie | +500MB | 0 |
+| Buffer-Kopie | +500 MB | 0 (Zero-Copy) |
 | E-Mail-Bodies | alle im RAM | nur ausgewaehlte |
 | DOM-Nodes | alle Emails | ~15 sichtbare |
 | Main-Thread-Blocking | Ja | Nein (Worker) |
-| Peak RAM | ~1500MB+ | ~600MB |
+| emailCache RAM | unbegrenzt | max ~500k Mails (adaptiv) |
+| Chunk-Cache (file://) | 32 MB fix | 64–512 MB adaptiv |
+| Peak RAM | ~1500 MB+ | ~600 MB |
 
