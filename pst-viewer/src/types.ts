@@ -109,5 +109,5 @@ export type WorkerResponse =
   | { type: 'EXPORT_READY'; zipBuffer: ArrayBuffer; fileName: string }
   | { type: 'ATTACHMENT_DATA'; fileName: string; mimeType: string; data: ArrayBuffer }
   | { type: 'EML_READY'; data: ArrayBuffer; fileName: string }
-  | { type: 'INDEX_PROGRESS'; indexed: number; totalFolders: number; done?: boolean }
+  | { type: 'INDEX_PROGRESS'; indexed: number; totalFolders: number; done?: boolean; paused?: boolean }
   | { type: 'CACHE_DELETED' }

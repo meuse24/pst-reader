@@ -73,6 +73,26 @@ let folderLoadOpId = 0
 let searchOpId = 0
 let indexOpId = 0
 
+// ─── Search/index coordination ────────────────────────────────────────────────
+// searchingActive prevents INDEX_ALL from competing with an active SEARCH
+let searchingActive = false
+// The folder path currently being searched (slow-path cursor walk)
+let activeSearchFolderPath: string | null = null
+// Total emails currently stored in emailCache — for memory cap enforcement
+let totalCachedEmails = 0
+
+// Maximum emails to keep in memory across all folders.
+// At ~1 KB/email this caps emailCache at ~500 MB RAM.
+const EMAIL_CACHE_MAX_EMAILS = 500_000
+
+// Folder names that should be indexed first (lowercase, matched against path suffix)
+const PRIORITY_FOLDER_NAMES = [
+  'inbox', 'posteingang',
+  'sent items', 'gesendete elemente', 'gesendet',
+  'drafts', 'entw\u00fcrfe',
+  'outbox', 'postausgang',
+]
+
 // Store original readSync so we can restore it for legacy mode
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const pstProto = PSTFile.prototype as any
@@ -449,6 +469,33 @@ function yieldToMessageLoop(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 0))
 }
 
+/** Returns a lower number for high-priority folder paths (Inbox, Sent Items, etc.) */
+function getFolderPriority(path: string): number {
+  const lower = path.toLowerCase()
+  for (let i = 0; i < PRIORITY_FOLDER_NAMES.length; i++) {
+    const name = PRIORITY_FOLDER_NAMES[i]
+    if (lower === name || lower.endsWith('/' + name)) return i
+  }
+  return PRIORITY_FOLDER_NAMES.length
+}
+
+/**
+ * Evict the least-important (most-recently-indexed, lowest-priority) folders
+ * from emailCache until at least `needed` slots are freed.
+ * Eviction goes from the end of the Map (newest entries) backwards.
+ */
+function evictEmailCache(needed: number): void {
+  const entries = [...emailCache.entries()]
+  let freed = 0
+  for (let i = entries.length - 1; i >= 0 && freed < needed; i--) {
+    const [path, emails] = entries[i]
+    emailCache.delete(path)
+    completedFolders.delete(path)
+    freed += emails.length
+    totalCachedEmails -= emails.length
+  }
+}
+
 function resetState() {
   pstFile = null
   pstBuffer = null
@@ -460,6 +507,9 @@ function resetState() {
   folderCache.clear()
   emailCache.clear()
   completedFolders.clear()
+  searchingActive = false
+  activeSearchFolderPath = null
+  totalCachedEmails = 0
   ++folderLoadOpId
   ++searchOpId
   ++indexOpId
@@ -1094,7 +1144,15 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
       case 'INDEX_ALL': {
         const myOpId = ++indexOpId
         let indexed = 0
-        const paths = [...folderCache.keys()]
+
+        // Sort folders so important ones (Inbox, Sent) are indexed first,
+        // then by descending email count within the same priority tier.
+        const paths = [...folderCache.keys()].sort((a, b) => {
+          const pa = getFolderPriority(a)
+          const pb = getFolderPriority(b)
+          if (pa !== pb) return pa - pb
+          return (folderCache.get(b)?.contentCount ?? 0) - (folderCache.get(a)?.contentCount ?? 0)
+        })
         const totalFolders = paths.filter(p => (folderCache.get(p)?.contentCount ?? 0) > 0).length
 
         for (const path of paths) {
@@ -1104,12 +1162,25 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
           if (folder.contentCount === 0) continue
           if (completedFolders.has(path)) { indexed++; continue }
 
+          // If SEARCH is currently cursor-walking this exact folder, wait for it
+          // to finish rather than starting our own cursor and causing conflicts.
+          if (activeSearchFolderPath === path) {
+            while (searchingActive) {
+              await new Promise(resolve => setTimeout(resolve, 50))
+              if (indexOpId !== myOpId) break
+            }
+            if (indexOpId !== myOpId) break
+            // SEARCH's slow-path writeback may have cached this folder
+            if (completedFolders.has(path)) { indexed++; post({ type: 'INDEX_PROGRESS', indexed, totalFolders }); continue }
+          }
+
           try {
             const emails: EmailMeta[] = []
             folder.moveChildCursorTo(0)
             let msg: PSTMessage | null = folder.getNextChild()
             let idx = 0
             let aborted = false
+            let skipFolder = false
 
             while (msg) {
               try { emails.push(extractEmailMeta(msg, idx, path)) } catch { /* skip broken entry */ }
@@ -1121,12 +1192,20 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
                 const savedFolderOpId = folderLoadOpId
                 await yieldToMessageLoop()
                 if (indexOpId !== myOpId) { aborted = true; break }
-                // Pause if user started a search or folder load — give them priority
-                if (searchOpId !== savedSearchOpId || folderLoadOpId !== savedFolderOpId) {
-                  // Wait a bit for the user operation to finish
-                  await new Promise(resolve => setTimeout(resolve, 200))
-                  if (indexOpId !== myOpId) { aborted = true; break }
+
+                // If user started a search or folder load, give them full priority:
+                // wait until the search is completely done before resuming.
+                if (searchOpId !== savedSearchOpId || folderLoadOpId !== savedFolderOpId || searchingActive) {
+                  post({ type: 'INDEX_PROGRESS', indexed, totalFolders, paused: true })
+                  while (searchingActive) {
+                    await new Promise(resolve => setTimeout(resolve, 50))
+                    if (indexOpId !== myOpId) { aborted = true; break }
+                  }
+                  if (aborted) break
+                  // If the search already cached this folder (via slow-path writeback), skip it.
+                  if (completedFolders.has(path)) { skipFolder = true; break }
                 }
+
                 // Re-sync cursor after yield (other commands may have moved it)
                 folder.moveChildCursorTo(idx)
                 msg = folder.getNextChild()
@@ -1137,9 +1216,15 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             }
 
             if (aborted || indexOpId !== myOpId) break
+            if (skipFolder) { indexed++; post({ type: 'INDEX_PROGRESS', indexed, totalFolders }); continue }
 
+            // Enforce memory cap before adding to cache
+            if (totalCachedEmails + emails.length > EMAIL_CACHE_MAX_EMAILS) {
+              evictEmailCache(emails.length)
+            }
             emailCache.set(path, emails)
             completedFolders.add(path)
+            totalCachedEmails += emails.length
           } catch {
             // Skip broken folder — don't let it kill the entire indexing run
           }
@@ -1213,8 +1298,10 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
             // Partial read — continue with what we have
           }
 
+          if (totalCachedEmails + emails.length > EMAIL_CACHE_MAX_EMAILS) evictEmailCache(emails.length)
           emailCache.set(cmd.path, emails)
           completedFolders.add(cmd.path)
+          totalCachedEmails += emails.length
           post({ type: 'FOLDER_EMAILS', path: cmd.path, emails, searchableFolderCount: emailCache.size, totalCount: emails.length, page: 0 })
           post({ type: 'FOLDER_DONE', path: cmd.path, totalCount: emails.length })
           return
@@ -1269,7 +1356,9 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
 
         // Only mark complete + send DONE if not cancelled
         if (folderLoadOpId !== myFolderOpId) return
+        if (totalCachedEmails + emails.length > EMAIL_CACHE_MAX_EMAILS) evictEmailCache(emails.length)
         completedFolders.add(cmd.path)
+        totalCachedEmails += emails.length
         post({ type: 'FOLDER_DONE', path: cmd.path, totalCount: emails.length })
         break
       }
@@ -1406,75 +1495,30 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
         let lastProgressAt = performance.now()
         let lastYieldAt = performance.now()
 
-        post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: [], append: false })
-        post({
-          type: 'SEARCH_PROGRESS',
-          progress: {
-            requestId: cmd.requestId,
-            folderPath: cmd.folderPath,
-            scanned: 0,
-            total,
-            matches: 0,
-            done: false,
-          },
-        })
+        // Mark search as active so INDEX_ALL fully suspends while we run.
+        // Cleared in `finally` at every exit point (return / break).
+        searchingActive = true
+        try {
+          post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: [], append: false })
+          post({
+            type: 'SEARCH_PROGRESS',
+            progress: {
+              requestId: cmd.requestId,
+              folderPath: cmd.folderPath,
+              scanned: 0,
+              total,
+              matches: 0,
+              done: false,
+            },
+          })
 
-        // Fast path: header-only search over cached emails (no PST I/O needed)
-        if (!includeBody && cachedEmails && completedFolders.has(cmd.folderPath)) {
-          // Use cache length as total — may differ from folder.contentCount if
-          // some emails were skipped during extractEmailMeta (broken entries).
-          const cacheTotal = cachedEmails.length
-          try {
-            for (let i = 0; i < cachedEmails.length; i++) {
-              if (searchOpId !== mySearchOpId) {
-                post({
-                  type: 'SEARCH_PROGRESS',
-                  progress: {
-                    requestId: cmd.requestId,
-                    folderPath: cmd.folderPath,
-                    scanned,
-                    total: cacheTotal,
-                    matches,
-                    done: true,
-                    cancelled: true,
-                  },
-                })
-                return
-              }
-
-              const email = cachedEmails[i]
-              if (terms.every(t => email._searchText.includes(t))) {
-                const matchField = detectMatchField(email, terms, '')
-                page.push({ email, folderPath: email.folderPath, matchField })
-                matches++
-
-                if (page.length >= SEARCH_RESULT_PAGE_SIZE) {
-                  post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
-                  page = []
-                }
-              }
-
-              scanned++
-
-              const now = performance.now()
-              if (now - lastProgressAt >= SEARCH_PROGRESS_INTERVAL) {
-                lastProgressAt = now
-                post({
-                  type: 'SEARCH_PROGRESS',
-                  progress: {
-                    requestId: cmd.requestId,
-                    folderPath: cmd.folderPath,
-                    scanned,
-                    total: cacheTotal,
-                    matches,
-                    done: false,
-                  },
-                })
-              }
-
-              if (now - lastYieldAt >= SEARCH_YIELD_INTERVAL) {
-                lastYieldAt = now
-                await yieldToMessageLoop()
+          // Fast path: header-only search over cached emails (no PST I/O needed)
+          if (!includeBody && cachedEmails && completedFolders.has(cmd.folderPath)) {
+            // Use cache length as total — may differ from folder.contentCount if
+            // some emails were skipped during extractEmailMeta (broken entries).
+            const cacheTotal = cachedEmails.length
+            try {
+              for (let i = 0; i < cachedEmails.length; i++) {
                 if (searchOpId !== mySearchOpId) {
                   post({
                     type: 'SEARCH_PROGRESS',
@@ -1490,143 +1534,112 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
                   })
                   return
                 }
-              }
-            }
-          } catch (err) {
-            if (scanned === 0) {
-              post({ type: 'ERROR', message: `Fehler bei der Suche: ${err instanceof Error ? err.message : String(err)}` })
-              post({
-                type: 'SEARCH_PROGRESS',
-                progress: {
-                  requestId: cmd.requestId,
-                  folderPath: cmd.folderPath,
-                  scanned: 0,
-                  total: cacheTotal,
-                  matches: 0,
-                  done: true,
-                },
-              })
-              return
-            }
-          }
 
-          // Send remaining results + done
-          if (searchOpId === mySearchOpId) {
-            if (page.length > 0) {
-              post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
-            }
-            post({
-              type: 'SEARCH_PROGRESS',
-              progress: {
-                requestId: cmd.requestId,
-                folderPath: cmd.folderPath,
-                scanned,
-                total: cacheTotal,
-                matches,
-                done: true,
-              },
-            })
-          }
-          break
-        }
+                const email = cachedEmails[i]
+                if (terms.every(t => email._searchText.includes(t))) {
+                  const matchField = detectMatchField(email, terms, '')
+                  page.push({ email, folderPath: email.folderPath, matchField })
+                  matches++
 
-        // Slow path: cursor-based search (body search or cache not available)
-        // Cancel in-flight paginated folder loads to avoid cursor interference
-        ++folderLoadOpId
+                  if (page.length >= SEARCH_RESULT_PAGE_SIZE) {
+                    post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
+                    page = []
+                  }
+                }
 
-        // Collect emails for cache writeback (only when not already cached)
-        const collectForCache = !cachedEmails && !completedFolders.has(cmd.folderPath)
-        const collectedEmails: EmailMeta[] = collectForCache ? [] : []
+                scanned++
 
-        try {
-          folder.moveChildCursorTo(0)
-          let msg: PSTMessage | null = folder.getNextChild()
-          let idx = 0
+                const now = performance.now()
+                if (now - lastProgressAt >= SEARCH_PROGRESS_INTERVAL) {
+                  lastProgressAt = now
+                  post({
+                    type: 'SEARCH_PROGRESS',
+                    progress: {
+                      requestId: cmd.requestId,
+                      folderPath: cmd.folderPath,
+                      scanned,
+                      total: cacheTotal,
+                      matches,
+                      done: false,
+                    },
+                  })
+                }
 
-          while (msg != null) {
-            if (searchOpId !== mySearchOpId) {
-              post({
-                type: 'SEARCH_PROGRESS',
-                progress: {
-                  requestId: cmd.requestId,
-                  folderPath: cmd.folderPath,
-                  scanned,
-                  total,
-                  matches,
-                  done: true,
-                  cancelled: true,
-                },
-              })
-              return
-            }
-
-            const cachedMeta = cachedEmails?.[idx]
-            const email = cachedMeta ?? extractEmailMeta(msg, idx, cmd.folderPath)
-            if (collectForCache) collectedEmails.push(email)
-            const metaSearchText = email._searchText
-
-            let bodyLower = ''
-            let bodyRaw = ''
-            let allMatch = true
-            for (const t of terms) {
-              if (metaSearchText.includes(t)) continue
-              if (!includeBody) {
-                allMatch = false
-                break
-              }
-              if (!bodyLower) {
-                try {
-                  bodyRaw = msg.body || ''
-                  bodyLower = bodyRaw.toLowerCase()
-                } catch {
-                  bodyRaw = ''
-                  bodyLower = ''
+                if (now - lastYieldAt >= SEARCH_YIELD_INTERVAL) {
+                  lastYieldAt = now
+                  await yieldToMessageLoop()
+                  if (searchOpId !== mySearchOpId) {
+                    post({
+                      type: 'SEARCH_PROGRESS',
+                      progress: {
+                        requestId: cmd.requestId,
+                        folderPath: cmd.folderPath,
+                        scanned,
+                        total: cacheTotal,
+                        matches,
+                        done: true,
+                        cancelled: true,
+                      },
+                    })
+                    return
+                  }
                 }
               }
-              if (!bodyLower.includes(t)) {
-                allMatch = false
-                break
+            } catch (err) {
+              if (scanned === 0) {
+                post({ type: 'ERROR', message: `Fehler bei der Suche: ${err instanceof Error ? err.message : String(err)}` })
+                post({
+                  type: 'SEARCH_PROGRESS',
+                  progress: {
+                    requestId: cmd.requestId,
+                    folderPath: cmd.folderPath,
+                    scanned: 0,
+                    total: cacheTotal,
+                    matches: 0,
+                    done: true,
+                  },
+                })
+                return
               }
             }
 
-            if (allMatch) {
-              const enrichedEmail = (!email.bodySnippet && bodyRaw)
-                ? { ...email, bodySnippet: buildBodySnippet(bodyRaw, terms) }
-                : email
-              const matchField = detectMatchField(enrichedEmail, terms, bodyLower)
-              page.push({ email: enrichedEmail, folderPath: enrichedEmail.folderPath, matchField })
-              matches++
-
-              if (page.length >= SEARCH_RESULT_PAGE_SIZE) {
+            // Send remaining results + done
+            if (searchOpId === mySearchOpId) {
+              if (page.length > 0) {
                 post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
-                page = []
               }
-            }
-
-            scanned++
-            idx++
-
-            const now = performance.now()
-            if (now - lastProgressAt >= SEARCH_PROGRESS_INTERVAL) {
-              lastProgressAt = now
               post({
                 type: 'SEARCH_PROGRESS',
                 progress: {
                   requestId: cmd.requestId,
                   folderPath: cmd.folderPath,
                   scanned,
-                  total,
+                  total: cacheTotal,
                   matches,
-                  done: false,
+                  done: true,
                 },
               })
             }
+            break
+          }
 
-            let yielded = false
-            if (now - lastYieldAt >= SEARCH_YIELD_INTERVAL) {
-              lastYieldAt = now
-              await yieldToMessageLoop()
-              yielded = true
+          // Slow path: cursor-based search (body search or cache not available).
+          // Cancel in-flight paginated folder loads to avoid cursor interference.
+          ++folderLoadOpId
+
+          // Track the folder being cursor-walked so INDEX_ALL can avoid it.
+          activeSearchFolderPath = cmd.folderPath
+
+          // Collect emails for cache writeback (only when folder not already cached)
+          const collectForCache = !completedFolders.has(cmd.folderPath)
+          const collectedEmails: EmailMeta[] = []
+
+          try {
+            folder.moveChildCursorTo(0)
+            let msg: PSTMessage | null = folder.getNextChild()
+            let idx = 0
+
+            while (msg != null) {
               if (searchOpId !== mySearchOpId) {
                 post({
                   type: 'SEARCH_PROGRESS',
@@ -1642,35 +1655,158 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
                 })
                 return
               }
-            }
 
-            // Other commands (e.g. FETCH_BODY) may move the shared folder cursor
-            // while we yielded. Re-sync to the next logical index before continuing.
-            if (yielded) {
-              folder.moveChildCursorTo(idx)
+              // Use cached metadata when available; otherwise extract from PST.
+              // Individual broken emails are skipped rather than aborting the search.
+              let email: EmailMeta
+              try {
+                email = cachedEmails?.[idx] ?? extractEmailMeta(msg, idx, cmd.folderPath)
+              } catch {
+                scanned++
+                idx++
+                msg = folder.getNextChild()
+                continue
+              }
+              if (collectForCache) collectedEmails.push(email)
+              const metaSearchText = email._searchText
+
+              let bodyLower = ''
+              let bodyRaw = ''
+              let allMatch = true
+              for (const t of terms) {
+                if (metaSearchText.includes(t)) continue
+                if (!includeBody) {
+                  allMatch = false
+                  break
+                }
+                if (!bodyLower) {
+                  try {
+                    bodyRaw = msg.body || ''
+                    bodyLower = bodyRaw.toLowerCase()
+                  } catch {
+                    bodyRaw = ''
+                    bodyLower = ''
+                  }
+                }
+                if (!bodyLower.includes(t)) {
+                  allMatch = false
+                  break
+                }
+              }
+
+              if (allMatch) {
+                const enrichedEmail = (!email.bodySnippet && bodyRaw)
+                  ? { ...email, bodySnippet: buildBodySnippet(bodyRaw, terms) }
+                  : email
+                const matchField = detectMatchField(enrichedEmail, terms, bodyLower)
+                page.push({ email: enrichedEmail, folderPath: enrichedEmail.folderPath, matchField })
+                matches++
+
+                if (page.length >= SEARCH_RESULT_PAGE_SIZE) {
+                  post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
+                  page = []
+                }
+              }
+
+              scanned++
+              idx++
+
+              const now = performance.now()
+              if (now - lastProgressAt >= SEARCH_PROGRESS_INTERVAL) {
+                lastProgressAt = now
+                post({
+                  type: 'SEARCH_PROGRESS',
+                  progress: {
+                    requestId: cmd.requestId,
+                    folderPath: cmd.folderPath,
+                    scanned,
+                    total,
+                    matches,
+                    done: false,
+                  },
+                })
+              }
+
+              let yielded = false
+              if (now - lastYieldAt >= SEARCH_YIELD_INTERVAL) {
+                lastYieldAt = now
+                await yieldToMessageLoop()
+                yielded = true
+                if (searchOpId !== mySearchOpId) {
+                  post({
+                    type: 'SEARCH_PROGRESS',
+                    progress: {
+                      requestId: cmd.requestId,
+                      folderPath: cmd.folderPath,
+                      scanned,
+                      total,
+                      matches,
+                      done: true,
+                      cancelled: true,
+                    },
+                  })
+                  return
+                }
+              }
+
+              // Other commands (e.g. FETCH_BODY) may move the shared folder cursor
+              // while we yielded. Re-sync to the next logical index before continuing.
+              if (yielded) {
+                folder.moveChildCursorTo(idx)
+              }
+              msg = folder.getNextChild()
             }
-            msg = folder.getNextChild()
+          } catch (err) {
+            if (scanned === 0) {
+              post({ type: 'ERROR', message: `Fehler bei der Suche: ${err instanceof Error ? err.message : String(err)}` })
+              post({
+                type: 'SEARCH_PROGRESS',
+                progress: {
+                  requestId: cmd.requestId,
+                  folderPath: cmd.folderPath,
+                  scanned: 0,
+                  total,
+                  matches: 0,
+                  done: true,
+                },
+              })
+              return
+            }
+            // Partial results are still useful — fall through to reporting below
           }
-        } catch (err) {
-          if (scanned === 0) {
-            post({ type: 'ERROR', message: `Fehler bei der Suche: ${err instanceof Error ? err.message : String(err)}` })
+
+          if (searchOpId !== mySearchOpId) {
             post({
               type: 'SEARCH_PROGRESS',
               progress: {
                 requestId: cmd.requestId,
                 folderPath: cmd.folderPath,
-                scanned: 0,
+                scanned,
                 total,
-                matches: 0,
+                matches,
                 done: true,
+                cancelled: true,
               },
             })
             return
           }
-          // Partial results are still useful
-        }
 
-        if (searchOpId !== mySearchOpId) {
+          // Cache metadata from search pass if folder wasn't already cached.
+          // Use scanned count (not collectedEmails.length) to allow for
+          // individual broken emails that were skipped during extraction.
+          if (collectForCache && !completedFolders.has(cmd.folderPath) && scanned >= total && collectedEmails.length > 0) {
+            if (totalCachedEmails + collectedEmails.length > EMAIL_CACHE_MAX_EMAILS) {
+              evictEmailCache(collectedEmails.length)
+            }
+            emailCache.set(cmd.folderPath, collectedEmails)
+            completedFolders.add(cmd.folderPath)
+            totalCachedEmails += collectedEmails.length
+          }
+
+          if (page.length > 0) {
+            post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
+          }
+
           post({
             type: 'SEARCH_PROGRESS',
             progress: {
@@ -1680,33 +1816,13 @@ self.onmessage = async (e: MessageEvent<WorkerCommand>) => {
               total,
               matches,
               done: true,
-              cancelled: true,
             },
           })
-          return
+        } finally {
+          // Always clear coordination flags so INDEX_ALL can resume
+          searchingActive = false
+          activeSearchFolderPath = null
         }
-
-        // Cache metadata from search pass if folder wasn't already cached
-        if (collectForCache && !completedFolders.has(cmd.folderPath) && collectedEmails.length === total) {
-          emailCache.set(cmd.folderPath, collectedEmails)
-          completedFolders.add(cmd.folderPath)
-        }
-
-        if (page.length > 0) {
-          post({ type: 'SEARCH_RESULTS', requestId: cmd.requestId, results: page, append: true })
-        }
-
-        post({
-          type: 'SEARCH_PROGRESS',
-          progress: {
-            requestId: cmd.requestId,
-            folderPath: cmd.folderPath,
-            scanned,
-            total,
-            matches,
-            done: true,
-          },
-        })
         break
       }
 

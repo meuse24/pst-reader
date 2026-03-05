@@ -21,7 +21,7 @@ export interface PSTWorkerState {
   folderTotalCounts: Map<string, number>
   folderLoadingPaths: Set<string>
   exporting: boolean
-  indexProgress: { indexed: number; total: number } | null
+  indexProgress: { indexed: number; total: number; paused?: boolean } | null
 }
 
 export interface PSTWorkerActions {
@@ -69,7 +69,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
   const [folderTotalCounts, setFolderTotalCounts] = useState<Map<string, number>>(new Map())
   const [folderLoadingPaths, setFolderLoadingPaths] = useState<Set<string>>(new Set())
   const [exporting, setExporting] = useState(false)
-  const [indexProgress, setIndexProgress] = useState<{ indexed: number; total: number } | null>(null)
+  const [indexProgress, setIndexProgress] = useState<{ indexed: number; total: number; paused?: boolean } | null>(null)
   const indexDoneTimerRef = useRef(0) // version counter to cancel stale done-timers
   // Use worker-reported searchable count (reflects LRU eviction), not local map size
   const indexedFolderCount = searchableFolderCount
@@ -262,7 +262,7 @@ export function usePSTWorker(): PSTWorkerState & PSTWorkerActions {
               if (indexDoneTimerRef.current === version) setIndexProgress(null)
             }, 3000)
           } else {
-            setIndexProgress({ indexed: msg.indexed, total: msg.totalFolders })
+            setIndexProgress({ indexed: msg.indexed, total: msg.totalFolders, paused: msg.paused })
           }
           break
         }

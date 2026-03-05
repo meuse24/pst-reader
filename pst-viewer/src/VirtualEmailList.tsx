@@ -201,7 +201,7 @@ export function VirtualEmailList({
                     {formatDate(email.date)}
                   </span>
                 </div>
-                <div className="text-gray-700 truncate mt-0.5">
+                <div className={`truncate mt-0.5 ${!email.isRead ? 'font-semibold text-gray-900' : 'text-gray-700'}`}>
                   {isSearching
                     ? <HighlightText text={email.subject} query={query} />
                     : email.subject}

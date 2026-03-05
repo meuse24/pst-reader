@@ -127,6 +127,17 @@ function ResizeHandle({ onDrag }: { onDrag: (delta: number) => void }) {
   )
 }
 
+// ─── App icon ────────────────────────────────────────────────────────────────
+
+function AppIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+      <path d="M3 8 Q1 8 1 10 L1 27 Q1 29 3 29 L29 29 Q31 29 31 27 L31 13 Q31 11 29 11 L18 11 L16 8.5 Q15.5 8 14.5 8 Z" fill="#3B82F6" />
+      <path d="M1 11 L31 11 L31 14.5 Q16 17 1 14.5 Z" fill="white" opacity="0.18" />
+    </svg>
+  )
+}
+
 // ─── UI components ───────────────────────────────────────────────────────────
 
 function FolderTreeItem({
@@ -213,10 +224,7 @@ function ExportDialog({
     <div className="relative" ref={dialogRef}>
       <button
         className="px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-        onClick={() => {
-          if (!showDialog) setConfirmed(false)
-          setShowDialog(!showDialog)
-        }}
+        onClick={() => { setShowDialog(v => !v); setConfirmed(false) }}
         disabled={exporting}
       >
         {exporting ? (
@@ -436,7 +444,7 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
 
         <div className="p-6">
           <div className="text-center mb-6">
-            <div className="text-4xl mb-2">&#128231;</div>
+            <div className="flex justify-center mb-3"><AppIcon className="w-14 h-14" /></div>
             <h1 className="text-xl font-bold text-gray-900">PST Viewer</h1>
             <p className="text-sm text-gray-500 mt-1">{t('infoSubtitle')}</p>
             <p className="text-xs text-gray-400 mt-2">&copy; {new Date().getFullYear()} MEUSE24</p>
@@ -609,7 +617,7 @@ function MenuBar({
   sidebarVisible: boolean
   onToggleSidebar: () => void
   loading: boolean
-  indexProgress: { indexed: number; total: number } | null
+  indexProgress: { indexed: number; total: number; paused?: boolean } | null
 }) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -714,6 +722,7 @@ function MenuBar({
           {indexProgress && indexProgress.indexed < indexProgress.total && (
             <span className="ml-2 text-gray-500">
               &middot; {tr('indexingProgress', { indexed: String(indexProgress.indexed), total: String(indexProgress.total) })}
+              {indexProgress.paused && <span className="text-yellow-500"> ⏸</span>}
             </span>
           )}
           {indexProgress && indexProgress.indexed >= indexProgress.total && (
@@ -1107,17 +1116,18 @@ function App() {
 
       <div className="flex flex-1 min-h-0">
         {/* Sidebar */}
-        {sidebarVisible && (
-          <div style={{ width: sidebarWidth }} className="flex-shrink-0 bg-white border-r border-gray-200 flex flex-col">
-            <div className="flex-1 overflow-y-auto py-1">
-              <FolderTreeItem
-                folder={pst.tree}
-                selectedPath={selectedFolderPath || ''}
-                onSelect={handleFolderSelect}
-              />
-            </div>
+        <div
+          style={{ width: sidebarVisible ? sidebarWidth : 0 }}
+          className="flex-shrink-0 bg-white border-r border-gray-200 flex flex-col overflow-hidden transition-[width] duration-200 ease-in-out"
+        >
+          <div className="flex-1 overflow-y-auto py-1" style={{ width: sidebarWidth }}>
+            <FolderTreeItem
+              folder={pst.tree}
+              selectedPath={selectedFolderPath || ''}
+              onSelect={handleFolderSelect}
+            />
           </div>
-        )}
+        </div>
         {sidebarVisible && <ResizeHandle onDrag={d => setSidebarWidth(w => clamp(w + d, MIN_SIDEBAR, MAX_SIDEBAR))} />}
 
         {/* Email List */}
