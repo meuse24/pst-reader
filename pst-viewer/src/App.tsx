@@ -321,17 +321,18 @@ function HelpDialog({ onClose }: { onClose: () => void }) {
       className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
       onClick={(e) => { if (e.target === overlayRef.current) onClose() }}
     >
-      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto relative">
-        <button
-          className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
-          onClick={onClose}
-        >
-          &#10005;
-        </button>
+      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 flex-shrink-0">
+          <h1 className="text-xl font-bold text-gray-900">{t('helpTitle')}</h1>
+          <button
+            className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
+            onClick={onClose}
+          >
+            &#10005;
+          </button>
+        </div>
 
-        <div className="p-6">
-          <h1 className="text-xl font-bold text-gray-900 mb-6">{t('helpTitle')}</h1>
-
+        <div className="p-6 overflow-y-auto">
           <section className="mb-5">
             <h2 className="text-base font-semibold text-gray-800 mb-1">{t('helpGettingStarted')}</h2>
             <p className="text-sm text-gray-600"><BoldText text={t('helpGettingStartedText')} /></p>
