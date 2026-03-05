@@ -435,25 +435,34 @@ function InfoDialog({ onClose }: { onClose: () => void }) {
       className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
       onClick={(e) => { if (e.target === overlayRef.current) onClose() }}
     >
-      <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full max-h-[80vh] overflow-y-auto relative">
-        <button
-          className="absolute top-3 right-3 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
-          onClick={onClose}
-        >
-          &#10005;
-        </button>
+      <div className="bg-white rounded-xl shadow-2xl max-w-xl w-full max-h-[80vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 flex-shrink-0">
+          <div className="flex items-center gap-3">
+            <AppIcon className="w-8 h-8" />
+            <div>
+              <h1 className="text-base font-bold text-gray-900 leading-tight">PST Titan</h1>
+              <p className="text-xs text-gray-400 leading-tight">&copy; {new Date().getFullYear()} MEUSE24</p>
+            </div>
+          </div>
+          <button
+            className="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-full transition"
+            onClick={onClose}
+          >
+            &#10005;
+          </button>
+        </div>
 
-        <div className="p-6">
+        <div className="p-6 overflow-y-auto">
           <div className="text-center mb-6">
-            <div className="flex justify-center mb-3"><AppIcon className="w-14 h-14" /></div>
-            <h1 className="text-xl font-bold text-gray-900">PST Viewer</h1>
-            <p className="text-sm text-gray-500 mt-1">{t('infoSubtitle')}</p>
-            <p className="text-xs text-gray-400 mt-2">&copy; {new Date().getFullYear()} MEUSE24</p>
+            <p className="text-sm text-gray-500">{t('infoSubtitle')}</p>
             <div className="flex items-center justify-center gap-3 mt-2">
               <a href="https://meuse24.info" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">meuse24.info</a>
               <span className="text-gray-300">|</span>
-              <a href="https://github.com/meuse24/pst-viewer" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">GitHub</a>
+              <a href="https://github.com/meuse24/pst-reader" target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">GitHub</a>
             </div>
+            <p className="text-xs text-gray-400 mt-2">
+              🌐 EN · DE · ES · FR · PT · IT · ZH · JA · RU · AR
+            </p>
           </div>
 
           <section className="mb-5">
